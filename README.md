@@ -1,9 +1,14 @@
 # AWG WARP Guardian
 
+[![CI](https://github.com/Not-Config/awg-warp-guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/Not-Config/awg-warp-guardian/actions/workflows/ci.yml)
+
 Установщик и watchdog для Cloudflare WARP-туннеля через AmneziaWG на
 Ubuntu-сервере. Проект проверяет не только состояние systemd-службы, но и
 реальное прохождение трафика через интерфейс, доступность заданных сайтов,
 свежий handshake и `warp=on` в Cloudflare Trace.
+
+Репозиторий публичный и распространяется по лицензии MIT: установка и
+клонирование доступны всем без GitHub-аккаунта.
 
 > Это клиентский WARP-туннель для сервера, а не установка собственного
 > AmneziaVPN-сервера для подключения других устройств. Именно такой профиль
@@ -27,7 +32,35 @@ Ubuntu-сервере. Проект проверяет не только сос�
 одним сайтом не создавала бесконечные WARP-регистрации. Старые конфиги хранятся
 с правами `0600` в `/var/lib/awg-warp-guardian/backups`.
 
-## Интерактивная установка
+## Установка одной командой
+
+На Ubuntu-сервере выполните:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Not-Config/awg-warp-guardian/main/bootstrap.sh | sudo bash
+```
+
+Bootstrap установит `git`, если он отсутствует, скачает проект в
+`/opt/awg-warp-guardian` и откроет интерактивное меню. Повторный запуск этой же
+команды безопасно обновит checkout через `git pull --ff-only`, после чего снова
+запустит установщик.
+
+Если хочется сначала проверить исполняемый код:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/Not-Config/awg-warp-guardian/main/bootstrap.sh
+less bootstrap.sh
+sudo bash bootstrap.sh
+```
+
+Для полностью автоматической установки аргументы передаются после `--`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Not-Config/awg-warp-guardian/main/bootstrap.sh \
+  | sudo bash -s -- --no-tui --interface awg-warp
+```
+
+## Ручная интерактивная установка
 
 При обычном запуске в терминале автоматически открывается русскоязычный TUI:
 
@@ -210,7 +243,7 @@ sudo ./uninstall.sh
 ## Разработка
 
 ```bash
-bash -n install.sh uninstall.sh src/generate-warp-config src/install-tui.sh
+bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh
 python3 -m compileall -q src tests
 python3 -m unittest discover -s tests -v
 bash tests/test_tui_helpers.sh

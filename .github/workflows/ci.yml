@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check shell syntax
-        run: bash -n install.sh uninstall.sh src/generate-warp-config src/install-tui.sh tests/test_tui_helpers.sh
+        run: bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh tests/test_tui_helpers.sh
       - name: Check Python syntax
         run: python3 -m compileall -q src tests
       - name: Run unit tests
