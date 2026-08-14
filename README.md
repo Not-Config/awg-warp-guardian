@@ -16,7 +16,8 @@ Ubuntu-сервер с `sudo`:
 curl -fsSL https://raw.githubusercontent.com/Not-Config/awg-warp-guardian/main/bootstrap.sh | sudo bash
 ```
 
-В интерактивном TUI можно выбрать:
+В интерактивном текстовом меню можно выбрать всё цифрами, без стрелок и
+зависимости от типа SSH-терминала:
 
 - новый профиль с warp-gen или существующий `.conf`;
 - вариант AWG 2.0: 1, 2 или 3;
@@ -29,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/Not-Config/awg-warp-guardian/main/b
 - число свежих кандидатов: от 1 до 20;
 - основной сайт warp-gen, совместимое зеркало или прокси.
 
-Для повторного открытия TUI:
+Для повторного открытия меню:
 
 ```bash
 cd /opt/awg-warp-guardian

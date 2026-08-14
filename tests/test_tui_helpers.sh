@@ -5,11 +5,6 @@ PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck disable=SC1091
 source "${PROJECT_DIR}/src/install-tui.sh"
 
-if ! declare -f tui_dialog | grep -q 'TERM=linux whiptail'; then
-  echo "TUI must use normal cursor-key sequences for SSH compatibility" >&2
-  exit 1
-fi
-
 assert_equal() {
   local expected=$1
   local actual=$2
@@ -54,6 +49,15 @@ tui_valid_initial_attempts 20
 ! tui_valid_initial_attempts 0
 ! tui_valid_initial_attempts 21
 ! tui_valid_initial_attempts invalid
+
+assert_equal second "$(printf '2\n' | tui_dialog --title Test \
+  --menu 'Choose one' 10 60 3 first First second Second)"
+assert_equal recommended "$(printf '\n' | tui_dialog --title Test \
+  --radiolist 'Choose one' 10 60 3 first First OFF recommended Recommended ON)"
+assert_equal 'github cloudflare' "$(printf '\n' | tui_dialog --title Test \
+  --checklist 'Choose sites' 10 60 3 github GitHub ON telegram Telegram OFF cloudflare Cloudflare ON)"
+assert_equal custom-value "$(printf 'custom-value\n' | tui_dialog --title Test \
+  --inputbox 'Type value' 10 60 default-value)"
 
 tui_dialog() {
   case "$*" in

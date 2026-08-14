@@ -4,21 +4,185 @@
 # intentionally safe to source from tests.
 
 tui_dialog() {
-  # Keep keyboard input and the ncurses screen attached to the controlling
-  # terminal. Only the selected value goes to stdout. Mixing those streams is
-  # what makes SSH arrow-key sequences such as ^[[B appear inside a menu row.
+  local title="AWG WARP Guardian" yes_label="Да" no_label="Нет"
+  local widget="" prompt="" default_value="" answer token
+  local input_device=/dev/stdin output_device=/dev/stderr
+  local -a tags=() labels=() states=() selected=()
+  local index default_index=1 item_count
+
+  # A numbered line interface is intentionally used instead of whiptail.
+  # whiptail treats the first byte of some Windows SSH arrow sequences as
+  # Escape, exits, and leaves a stale window on the screen. Plain line input
+  # works identically in Windows Terminal, PuTTY, tmux and a Linux console.
   if (: </dev/tty) 2>/dev/null && (: >/dev/tty) 2>/dev/null; then
-    # Windows Terminal/OpenSSH can keep sending normal cursor sequences
-    # (ESC [ A/B) even when xterm terminfo asks for application sequences
-    # (ESC O A/B). linux terminfo deliberately uses the normal form. Reset
-    # cursor-key mode before every screen so both Windows and Linux SSH
-    # clients agree with whiptail about the received bytes.
-    printf '\033[?1l\033>' >/dev/tty
-    TERM=linux whiptail --output-fd 3 "$@" \
-      3>&1 </dev/tty >/dev/tty 2>/dev/tty
-  else
-    TERM=linux whiptail "$@" 3>&1 1>&2 2>&3
+    input_device=/dev/tty
+    output_device=/dev/tty
   fi
+
+  while (($#)); do
+    case "$1" in
+      --title)
+        title=$2
+        shift 2
+        ;;
+      --yes-button)
+        yes_label=$2
+        shift 2
+        ;;
+      --no-button)
+        no_label=$2
+        shift 2
+        ;;
+      --notags)
+        shift
+        ;;
+      --menu|--radiolist|--checklist|--inputbox|--yesno|--msgbox)
+        widget=$1
+        shift
+        break
+        ;;
+      *)
+        return 64
+        ;;
+    esac
+  done
+  [[ -n ${widget} && $# -ge 3 ]] || return 64
+
+  prompt=$1
+  shift 3 # prompt, height and width
+  case "${widget}" in
+    --menu|--radiolist|--checklist)
+      (($# >= 1)) || return 64
+      shift # list height
+      ;;
+    --inputbox)
+      default_value=${1:-}
+      ;;
+  esac
+
+  {
+    printf '\n============================================================\n'
+    printf '%s\n' "${title}"
+    printf '%b\n' "${prompt}"
+    printf '============================================================\n'
+  } >"${output_device}"
+
+  case "${widget}" in
+    --menu)
+      while (($# >= 2)); do
+        tags+=("$1")
+        labels+=("$2")
+        shift 2
+      done
+      item_count=${#tags[@]}
+      ((item_count > 0)) || return 64
+      for index in "${!tags[@]}"; do
+        printf '  %d) %s\n' "$((index + 1))" "${labels[index]}" >"${output_device}"
+      done
+      while true; do
+        printf 'Введите номер [1], 0 — отмена: ' >"${output_device}"
+        IFS= read -r answer <"${input_device}" || return 1
+        answer=${answer:-1}
+        [[ ${answer} == 0 ]] && return 1
+        if [[ ${answer} =~ ^[0-9]+$ ]] && ((10#${answer} >= 1 && 10#${answer} <= item_count)); then
+          printf '%s\n' "${tags[10#${answer}-1]}"
+          return 0
+        fi
+        printf 'Нужен номер от 1 до %d.\n' "${item_count}" >"${output_device}"
+      done
+      ;;
+    --radiolist)
+      while (($# >= 3)); do
+        tags+=("$1")
+        labels+=("$2")
+        states+=("$3")
+        [[ $3 == ON ]] && default_index=$((${#tags[@]}))
+        shift 3
+      done
+      item_count=${#tags[@]}
+      ((item_count > 0)) || return 64
+      for index in "${!tags[@]}"; do
+        if ((index + 1 == default_index)); then
+          printf '  %d) %s [по умолчанию]\n' "$((index + 1))" "${labels[index]}" >"${output_device}"
+        else
+          printf '  %d) %s\n' "$((index + 1))" "${labels[index]}" >"${output_device}"
+        fi
+      done
+      while true; do
+        printf 'Введите номер [%d], 0 — отмена: ' "${default_index}" >"${output_device}"
+        IFS= read -r answer <"${input_device}" || return 1
+        answer=${answer:-${default_index}}
+        [[ ${answer} == 0 ]] && return 1
+        if [[ ${answer} =~ ^[0-9]+$ ]] && ((10#${answer} >= 1 && 10#${answer} <= item_count)); then
+          printf '%s\n' "${tags[10#${answer}-1]}"
+          return 0
+        fi
+        printf 'Нужен номер от 1 до %d.\n' "${item_count}" >"${output_device}"
+      done
+      ;;
+    --checklist)
+      while (($# >= 3)); do
+        tags+=("$1")
+        labels+=("$2")
+        states+=("$3")
+        shift 3
+      done
+      item_count=${#tags[@]}
+      ((item_count > 0)) || return 64
+      default_value=""
+      for index in "${!tags[@]}"; do
+        if [[ ${states[index]} == ON ]]; then
+          printf '  %d) [x] %s\n' "$((index + 1))" "${labels[index]}" >"${output_device}"
+          default_value+="${default_value:+,}$((index + 1))"
+        else
+          printf '  %d) [ ] %s\n' "$((index + 1))" "${labels[index]}" >"${output_device}"
+        fi
+      done
+      while true; do
+        printf 'Номера через запятую [%s], 0 — ничего, q — отмена: ' \
+          "${default_value:-0}" >"${output_device}"
+        IFS= read -r answer <"${input_device}" || return 1
+        answer=${answer:-${default_value:-0}}
+        [[ ${answer} == q || ${answer} == Q ]] && return 1
+        [[ ${answer} == 0 ]] && return 0
+        answer=${answer//,/ }
+        selected=()
+        for token in ${answer}; do
+          if [[ ! ${token} =~ ^[0-9]+$ ]] || ((10#${token} < 1 || 10#${token} > item_count)); then
+            selected=()
+            break
+          fi
+          selected+=("${tags[10#${token}-1]}")
+        done
+        if ((${#selected[@]} > 0)); then
+          printf '%s\n' "${selected[*]}"
+          return 0
+        fi
+        printf 'Укажите номера от 1 до %d через запятую.\n' "${item_count}" >"${output_device}"
+      done
+      ;;
+    --inputbox)
+      printf 'Значение [%s]: ' "${default_value}" >"${output_device}"
+      IFS= read -r answer <"${input_device}" || return 1
+      printf '%s\n' "${answer:-${default_value}}"
+      ;;
+    --yesno)
+      while true; do
+        printf '%s/%s [%s]: ' "${yes_label}" "${no_label}" "${yes_label}" >"${output_device}"
+        IFS= read -r answer <"${input_device}" || return 1
+        case "${answer,,}" in
+          ""|y|yes|д|да) return 0 ;;
+          n|no|н|нет) return 1 ;;
+          *) printf 'Введите да или нет.\n' >"${output_device}" ;;
+        esac
+      done
+      ;;
+    --msgbox)
+      printf 'Нажмите Enter, чтобы продолжить.' >"${output_device}"
+      IFS= read -r _ <"${input_device}" || true
+      printf '\n' >"${output_device}"
+      ;;
+  esac
 }
 
 tui_calculate_quorum() {
@@ -272,7 +436,7 @@ tui_select_sites() {
   local -a selected_urls=()
 
   if ! selection=$(tui_dialog --title "Проверка доступности" \
-    --checklist "Какие сайты должны открываться именно через VPN?\nПробел — выбрать, Enter — продолжить." \
+    --checklist "Какие сайты должны открываться именно через VPN?" \
     22 92 10 \
     github "GitHub" ON \
     telegram "Telegram" ON \
@@ -622,7 +786,6 @@ tui_install_once() {
 run_install_tui() {
   local result
 
-  command -v whiptail >/dev/null 2>&1 || return 69
   while true; do
     if tui_install_once; then
       return 0

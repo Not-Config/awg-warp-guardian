@@ -261,16 +261,6 @@ elif [[ ${tui_mode} == auto && ${configuration_args_seen} -eq 0 && -t 0 && -t 1 
 fi
 
 if ((run_tui == 1)); then
-  if ! command -v whiptail >/dev/null 2>&1; then
-    if ((skip_package_install == 1)); then
-      echo "The interactive installer requires whiptail." >&2
-      echo "Install it first or rerun with --no-tui." >&2
-      exit 69
-    fi
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y whiptail
-  fi
   # shellcheck disable=SC1091
   source "${PROJECT_DIR}/src/install-tui.sh"
   if run_install_tui; then
@@ -490,7 +480,7 @@ install_packages() {
   apt-get update
   apt-get install -y \
     ca-certificates curl iproute2 iptables jq python3 resolvconf util-linux \
-    whiptail wireguard-tools
+    wireguard-tools
   if command -v awg >/dev/null 2>&1 && command -v awg-quick >/dev/null 2>&1; then
     return
   fi
