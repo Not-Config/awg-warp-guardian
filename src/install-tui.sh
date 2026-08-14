@@ -4,7 +4,14 @@
 # intentionally safe to source from tests.
 
 tui_dialog() {
-  whiptail "$@" 3>&1 1>&2 2>&3
+  # Keep keyboard input and the ncurses screen attached to the controlling
+  # terminal. Only the selected value goes to stdout. Mixing those streams is
+  # what makes SSH arrow-key sequences such as ^[[B appear inside a menu row.
+  if (: </dev/tty) 2>/dev/null && (: >/dev/tty) 2>/dev/null; then
+    whiptail --output-fd 3 "$@" 3>&1 </dev/tty >/dev/tty 2>/dev/tty
+  else
+    whiptail "$@" 3>&1 1>&2 2>&3
+  fi
 }
 
 tui_calculate_quorum() {
@@ -103,17 +110,54 @@ tui_add_unique_path() {
 tui_profile_description() {
   local profile=$1
   local endpoint
-  local name
 
-  name=$(basename -- "${profile}" .conf)
   endpoint=$(sed -n -E \
     's/^[[:space:]]*Endpoint[[:space:]]*=[[:space:]]*([^[:space:]#]+).*$/\1/p' \
     "${profile}" | head -n 1)
   if [[ -n ${endpoint} ]]; then
-    printf '%s — %s' "${name}" "${endpoint}"
+    printf '%s — %s' "${profile}" "${endpoint}"
   else
-    printf '%s — %s' "${name}" "${profile}"
+    printf '%s' "${profile}"
   fi
+}
+
+tui_select_discovered_profile() {
+  local -a menu_items=()
+  local current_config candidate choice description index
+
+  tui_profiles=()
+  if [[ -s ${guardian_config} ]]; then
+    current_config=$(sed -n 's/^CONFIG_PATH=//p' "${guardian_config}" | head -n 1)
+    current_config=${current_config%\"}
+    current_config=${current_config#\"}
+    [[ -n ${current_config} ]] && tui_add_unique_path "${current_config}"
+  fi
+  for candidate in /etc/amnezia/amneziawg/*.conf /etc/amneziawg/*.conf; do
+    tui_add_unique_path "${candidate}"
+  done
+
+  if ((${#tui_profiles[@]} == 0)); then
+    tui_dialog --title "Старые профили не найдены" \
+      --msgbox "В стандартных каталогах нет готовых .conf. Выберите получение нового профиля с warp-gen." \
+      10 82
+    return 2
+  fi
+
+  for index in "${!tui_profiles[@]}"; do
+    description=$(tui_profile_description "${tui_profiles[index]}")
+    menu_items+=("profile_${index}" "${description}")
+  done
+
+  if ! choice=$(tui_dialog --title "Найденные профили" --notags \
+    --menu "Какой существующий .conf использовать? Полный путь позволяет отличить дубликаты." \
+    22 100 12 "${menu_items[@]}"); then
+    return 2
+  fi
+
+  index=${choice#profile_}
+  [[ ${index} =~ ^[0-9]+$ && -n ${tui_profiles[index]+x} ]] || return 2
+  config_path=${tui_profiles[index]}
+  interface=$(basename -- "${config_path}" .conf)
 }
 
 tui_confirm_keep_settings() {
@@ -142,32 +186,20 @@ tui_confirm_keep_settings() {
 
 tui_select_profile() {
   local -a menu_items=()
-  local current_config candidate description choice index
+  local choice
 
-  tui_profiles=()
+  menu_items+=("new" "Получить и проверить новый профиль с warp-gen (рекомендуется)")
   if [[ -s ${guardian_config} ]]; then
-    current_config=$(sed -n 's/^CONFIG_PATH=//p' "${guardian_config}" | head -n 1)
-    current_config=${current_config%\"}
-    current_config=${current_config#\"}
-    [[ -n ${current_config} ]] && tui_add_unique_path "${current_config}"
-    menu_items+=("keep" "Обновить программу, сохранить текущие настройки (рекомендуется)")
+    menu_items+=("keep" "Только обновить программу, сохранить текущий VPN")
   fi
-
-  for candidate in /etc/amnezia/amneziawg/*.conf /etc/amneziawg/*.conf; do
-    tui_add_unique_path "${candidate}"
-  done
-  for index in "${!tui_profiles[@]}"; do
-    description=$(tui_profile_description "${tui_profiles[index]}")
-    menu_items+=("profile_${index}" "Использовать: ${description}")
-  done
   menu_items+=(
-    "new" "Получить и проверить новый профиль с warp-gen"
-    "import" "Указать существующий .conf вручную"
+    "existing" "Выбрать один из найденных на сервере старых .conf"
+    "import" "Указать путь к существующему .conf вручную"
   )
 
-  if ! choice=$(tui_dialog --title "AWG WARP Guardian — профиль" \
+  if ! choice=$(tui_dialog --title "AWG WARP Guardian — профиль" --notags \
     --menu "Какую конфигурацию установить и контролировать?" \
-    22 92 12 "${menu_items[@]}"); then
+    17 92 8 "${menu_items[@]}"); then
     return 130
   fi
 
@@ -176,10 +208,8 @@ tui_select_profile() {
       tui_confirm_keep_settings
       return $?
       ;;
-    profile_*)
-      index=${choice#profile_}
-      config_path=${tui_profiles[index]}
-      interface=$(basename -- "${config_path}" .conf)
+    existing)
+      tui_select_discovered_profile || return $?
       ;;
     import)
       if ! config_path=$(tui_dialog --title "Существующий профиль" \

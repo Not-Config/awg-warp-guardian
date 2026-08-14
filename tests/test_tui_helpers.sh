@@ -52,6 +52,31 @@ tui_valid_initial_attempts 20
 
 tui_dialog() {
   case "$*" in
+    *"AWG WARP Guardian — профиль"*)
+      [[ " $* " == *" --notags "* ]] || return 1
+      [[ "$*" == *"Получить и проверить новый профиль с warp-gen (рекомендуется)"* ]] || return 1
+      [[ "$*" == *"Выбрать один из найденных на сервере старых .conf"* ]] || return 1
+      [[ "$*" != *"profile_0"* ]] || return 1
+      printf 'new\n'
+      ;;
+    *"Новый WARP-профиль"*) printf 'awg-warp\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+guardian_config=/nonexistent/guardian.env
+if tui_select_profile; then
+  echo "new profile selection unexpectedly skipped configuration" >&2
+  exit 1
+else
+  profile_result=$?
+fi
+assert_equal 1 "${profile_result}"
+assert_equal awg-warp "${interface}"
+assert_equal '' "${config_path}"
+
+tui_dialog() {
+  case "$*" in
     *--checklist*) printf '"github" "youtube" "cloudflare"\n' ;;
     *"Частота проверки"*) printf '5min\n' ;;
     *"Попытки получения профиля"*) printf '10\n' ;;
