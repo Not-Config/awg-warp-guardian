@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly IP_COMMAND=${IP_COMMAND:-ip}
+readonly -a LAN_RULES=(
+  "10000|10.0.0.0/8"
+  "10001|100.64.0.0/10"
+  "10002|169.254.0.0/16"
+  "10003|172.16.0.0/12"
+  "10004|192.168.0.0/16"
+)
+
+delete_rule() {
+  local priority=$1
+  local network=$2
+
+  "${IP_COMMAND}" -4 rule del pref "${priority}" to "${network}" lookup main \
+    2>/dev/null || true
+}
+
+delete_all_rules() {
+  local entry priority network
+
+  for entry in "${LAN_RULES[@]}"; do
+    priority=${entry%%|*}
+    network=${entry#*|}
+    delete_rule "${priority}" "${network}"
+  done
+}
+
+case "${1:-}" in
+  up)
+    trap delete_all_rules ERR
+    for entry in "${LAN_RULES[@]}"; do
+      priority=${entry%%|*}
+      network=${entry#*|}
+      delete_rule "${priority}" "${network}"
+      "${IP_COMMAND}" -4 rule add pref "${priority}" to "${network}" lookup main
+    done
+    trap - ERR
+    ;;
+  down)
+    delete_all_rules
+    ;;
+  *)
+    echo "Usage: lan-rules up|down" >&2
+    exit 64
+    ;;
+esac

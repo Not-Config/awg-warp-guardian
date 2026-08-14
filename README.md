@@ -187,9 +187,22 @@ journalctl -u awg-warp-guardian.service -n 100 --no-pager
 
 ## Защита SSH и маршрутов
 
-По умолчанию TUI включает «Исключить LAN». Тогда `AllowedIPs` содержит только
-нелокальные IPv4-диапазоны и глобальный IPv6 `2000::/3`: RFC1918 (`10/8`,
-`172.16/12`, `192.168/16`), loopback, link-local и IPv6 ULA остаются вне VPN.
+По умолчанию TUI включает «Исключить LAN». IPv4 при этом остаётся full-tunnel,
+чтобы механизм `fwmark` от `wg-quick` гарантированно сохранял прямой маршрут к
+WARP endpoint. Перед правилами VPN добавляются policy rules с приоритетами
+`10000–10004`, которые направляют `10/8`, `100.64/10`, `169.254/16`,
+`172.16/12` и `192.168/16` в обычную таблицу `main`. Поэтому доступ сохраняется
+не только из непосредственно подключённой `/24`, но и из другой частной сети
+за локальным маршрутизатором. Для IPv6 через WARP направляется только глобальный
+диапазон `2000::/3`; ULA и link-local остаются вне туннеля.
+
+Правила устанавливаются и удаляются хуками профиля:
+
+```ini
+PreUp = /usr/local/sbin/awg-warp-lan-rules up
+PostDown = /usr/local/sbin/awg-warp-lan-rules down
+```
+
 Это снижает риск потерять SSH и доступ к локальным сервисам при запуске
 full-tunnel на удалённом сервере.
 
@@ -307,15 +320,19 @@ sudo ./uninstall.sh
 
 `sudo ./uninstall.sh --purge` дополнительно удалит настройки guardian, его
 состояние и резервные копии, но также оставит сам `.conf` туннеля.
+Если профиль использует хук защиты LAN, маленький
+`/usr/local/sbin/awg-warp-lan-rules` также остаётся на месте, чтобы последующий
+запуск или остановка VPN не сломались.
 
 ## Разработка
 
 ```bash
-bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh src/route-policy.sh tests/test_generator_wrapper.sh
+bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh src/lan-rules src/route-policy.sh tests/test_generator_wrapper.sh tests/test_lan_rules.sh
 python3 -m compileall -q src tests
 python3 -m unittest discover -s tests -v
 bash tests/test_tui_helpers.sh
 bash tests/test_generator_wrapper.sh
+bash tests/test_lan_rules.sh
 ```
 
 Основной проект распространяется по MIT. Для локальной перевыдачи ключей

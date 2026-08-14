@@ -64,14 +64,24 @@ if grep -Fq 'LOCAL_TEST_SECRET' "${TEST_DIR}/progress.log"; then
   exit 1
 fi
 grep -Fq 'PrivateKey = LOCAL_TEST_SECRET' "${TEST_DIR}/generated.conf"
-grep -Fq '2000::/3' "${TEST_DIR}/generated.conf"
-if grep -Eq 'AllowedIPs.*(10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)' \
-  "${TEST_DIR}/generated.conf"; then
-  echo "LAN-excluded config contains a private network" >&2
+grep -Fq 'AllowedIPs = 0.0.0.0/0, 2000::/3' "${TEST_DIR}/generated.conf"
+grep -Fq 'PreUp = /usr/local/sbin/awg-warp-lan-rules up' \
+  "${TEST_DIR}/generated.conf"
+grep -Fq 'PostDown = /usr/local/sbin/awg-warp-lan-rules down' \
+  "${TEST_DIR}/generated.conf"
+if grep -Fq 'AllowedIPs = 0.0.0.0/0, ::/0' "${TEST_DIR}/generated.conf"; then
+  echo "LAN-excluded config still contains a full IPv6 tunnel" >&2
   exit 1
 fi
-if grep -Fq 'AllowedIPs = 0.0.0.0/0' "${TEST_DIR}/generated.conf"; then
-  echo "LAN-excluded config still contains a full IPv4 tunnel" >&2
+
+# shellcheck disable=SC1091
+source "${PROJECT_DIR}/src/route-policy.sh"
+awg_apply_route_policy \
+  "${TEST_DIR}/generated.conf" "${TEST_DIR}/reapplied.conf" 1
+asserted_hooks=$(grep -Fc '/awg-warp-lan-rules' \
+  "${TEST_DIR}/reapplied.conf")
+if [[ ${asserted_hooks} -ne 2 ]]; then
+  echo "LAN policy reapplication duplicated or removed managed hooks" >&2
   exit 1
 fi
 
@@ -81,6 +91,10 @@ WARP_API_BASE_URL=https://mirror.example/v0i1909051800 \
   "${TEST_DIR}/full-tunnel.conf" \
   >/dev/null 2>"${TEST_DIR}/full-tunnel-progress.log"
 grep -Fq 'AllowedIPs = 0.0.0.0/0, ::/0' "${TEST_DIR}/full-tunnel.conf"
+if grep -Fq '/awg-warp-lan-rules' "${TEST_DIR}/full-tunnel.conf"; then
+  echo "full-tunnel config unexpectedly contains LAN policy hooks" >&2
+  exit 1
+fi
 grep -Fq '[generator] LAN exclusion: disabled' \
   "${TEST_DIR}/full-tunnel-progress.log"
 
