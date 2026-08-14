@@ -486,16 +486,29 @@ mv -f -- "${timer_dropin_tmp}" \
 systemctl daemon-reload
 
 generated_config=0
+initial_generation_attempt=1
+initial_generation_attempts=3
 if [[ ! -s "${config_path}" ]]; then
   install -d -m 700 "$(dirname -- "${config_path}")"
-  echo "Generating the initial Cloudflare WARP configuration..."
   initial_endpoint=${warp_endpoints%%,*}
-  WARP_ENDPOINT="${initial_endpoint}" \
-  WARP_API_BASE_URL="${generator_api_url}" \
-  HTTPS_PROXY="${generator_https_proxy}" \
-  https_proxy="${generator_https_proxy}" \
-    /usr/local/lib/awg-warp-guardian/generate-warp-config "${config_path}"
-  generated_config=1
+  while ((initial_generation_attempt <= initial_generation_attempts)); do
+    echo "Generating Cloudflare WARP configuration (attempt ${initial_generation_attempt}/${initial_generation_attempts})..."
+    if WARP_ENDPOINT="${initial_endpoint}" \
+      WARP_API_BASE_URL="${generator_api_url}" \
+      HTTPS_PROXY="${generator_https_proxy}" \
+      https_proxy="${generator_https_proxy}" \
+      /usr/local/lib/awg-warp-guardian/generate-warp-config "${config_path}" && \
+      awg-quick strip "${config_path}" >/dev/null; then
+      generated_config=1
+      break
+    fi
+    rm -f -- "${config_path}"
+    initial_generation_attempt=$((initial_generation_attempt + 1))
+  done
+  if ((generated_config == 0)); then
+    echo "Could not generate a valid initial WARP config after ${initial_generation_attempts} attempts." >&2
+    exit 70
+  fi
 else
   chmod 600 "${config_path}"
   echo "Adopting existing AWG profile: ${config_path}"
@@ -519,7 +532,23 @@ if systemctl is-active --quiet "awg-quick@${interface}.service"; then
 fi
 systemctl enable --now "awg-quick@${interface}.service"
 sleep 12
+installation_healthy=0
 if /usr/local/sbin/awg-warp-guardian check; then
+  installation_healthy=1
+elif ((generated_config == 1)); then
+  initial_generation_attempt=$((initial_generation_attempt + 1))
+  while ((initial_generation_attempt <= initial_generation_attempts)); do
+    echo "Initial config failed health checks; reissuing it (attempt ${initial_generation_attempt}/${initial_generation_attempts})..." >&2
+    systemctl stop "awg-quick@${interface}.service" || true
+    if /usr/local/sbin/awg-warp-guardian rotate --force; then
+      installation_healthy=1
+      break
+    fi
+    initial_generation_attempt=$((initial_generation_attempt + 1))
+  done
+fi
+
+if ((installation_healthy == 1)); then
   systemctl enable awg-warp-guardian.timer >/dev/null
   systemctl restart awg-warp-guardian.timer
   echo
