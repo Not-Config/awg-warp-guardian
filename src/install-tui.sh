@@ -246,6 +246,7 @@ tui_select_profile() {
   quorum_option_set=1
   interval_option_set=1
   initial_attempts_option_set=1
+  lan_option_set=1
   endpoints_option_set=1
   generator_api_option_set=1
   generator_proxy_option_set=1
@@ -395,6 +396,25 @@ tui_select_initial_attempts() {
   initial_attempts_option_set=1
 }
 
+tui_select_lan_mode() {
+  local lan_choice
+
+  if ! lan_choice=$(tui_dialog --title "Доступ к локальной сети" \
+    --radiolist "Должны ли частные и локальные адреса оставаться вне VPN? Это защищает доступ к серверу по LAN." \
+    17 94 5 \
+    exclude "Исключить LAN из VPN (рекомендуется)" ON \
+    include "Направлять LAN через VPN (риск потери доступа)" OFF); then
+    return 130
+  fi
+
+  case "${lan_choice}" in
+    exclude) exclude_lan=1 ;;
+    include) exclude_lan=0 ;;
+    *) return 64 ;;
+  esac
+  lan_option_set=1
+}
+
 tui_select_generator_source() {
   local source_choice custom_api proxy_url
 
@@ -457,7 +477,7 @@ tui_select_generator_source() {
 }
 
 tui_confirm_install() {
-  local endpoint_summary generator_summary site_lines summary url attempts_summary
+  local endpoint_summary generator_summary site_lines summary url attempts_summary lan_summary
 
   if ((${#custom_endpoints[@]})); then
     endpoint_summary=$(IFS=,; printf '%s' "${custom_endpoints[*]}")
@@ -477,10 +497,15 @@ tui_confirm_install() {
   else
     attempts_summary="до ${initial_generation_attempts} новых регистраций"
   fi
+  if [[ ${exclude_lan} == 1 ]]; then
+    lan_summary="исключён из VPN (рекомендуется)"
+  else
+    lan_summary="направляется через VPN"
+  fi
   summary=$(printf \
-    'Интерфейс: %s\nПрофиль: %s\nEndpoint: %s\nИсточник генерации: %s\nПопытки: %s\nЧастота проверки: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
+    'Интерфейс: %s\nПрофиль: %s\nEndpoint: %s\nИсточник генерации: %s\nLAN: %s\nПопытки: %s\nЧастота проверки: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
     "${interface}" "${config_path:-будет создан автоматически}" \
-    "${endpoint_summary}" "${generator_summary}" "${attempts_summary}" \
+    "${endpoint_summary}" "${generator_summary}" "${lan_summary}" "${attempts_summary}" \
     "${check_interval}" "${site_lines}" \
     "${check_quorum}" "${#custom_urls[@]}")
 
@@ -512,6 +537,7 @@ tui_install_once() {
   done
   tui_select_quorum || return $?
   tui_select_interval || return $?
+  tui_select_lan_mode || return $?
   tui_select_generator_source || return $?
   if [[ -z ${config_path} || ! -s ${config_path} ]]; then
     tui_select_initial_attempts || return $?

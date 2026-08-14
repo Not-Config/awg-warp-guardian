@@ -8,6 +8,7 @@ fi
 
 readonly OUTPUT=$1
 readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+readonly ROUTE_POLICY_SCRIPT="${SCRIPT_DIR}/route-policy.sh"
 UPSTREAM_SCRIPT="${SCRIPT_DIR}/vendor/warp_generator.sh"
 if [[ ! -x ${UPSTREAM_SCRIPT} && -x ${SCRIPT_DIR}/../vendor/warp_generator.sh ]]; then
   UPSTREAM_SCRIPT="${SCRIPT_DIR}/../vendor/warp_generator.sh"
@@ -17,6 +18,8 @@ readonly ENDPOINT=${WARP_ENDPOINT:-162.159.192.1:500}
 API_BASE_URL=${WARP_API_BASE_URL:-https://api.cloudflareclient.com/v0i1909051800}
 API_BASE_URL=${API_BASE_URL%/}
 readonly API_BASE_URL
+EXCLUDE_LAN=${WARP_EXCLUDE_LAN:-1}
+readonly EXCLUDE_LAN
 
 generator_log() {
   printf '[generator] %s\n' "$*" >&2
@@ -25,6 +28,16 @@ generator_log() {
 if [[ ! -x "${UPSTREAM_SCRIPT}" ]]; then
   echo "Bundled WARP generator is missing" >&2
   exit 69
+fi
+if [[ ! -r ${ROUTE_POLICY_SCRIPT} ]]; then
+  echo "Bundled route policy helper is missing" >&2
+  exit 69
+fi
+# shellcheck disable=SC1090
+source "${ROUTE_POLICY_SCRIPT}"
+if ! awg_valid_lan_mode "${EXCLUDE_LAN}"; then
+  echo "WARP_EXCLUDE_LAN must be 0 or 1" >&2
+  exit 65
 fi
 if [[ ! "${ENDPOINT}" =~ ^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$ ]]; then
   echo "WARP_ENDPOINT has an invalid host:port value" >&2
@@ -65,6 +78,11 @@ else
   generator_log "Transport: direct HTTPS connection."
 fi
 generator_log "Creating a local key and requesting WARP registration parameters..."
+if [[ ${EXCLUDE_LAN} == 1 ]]; then
+  generator_log "LAN exclusion: enabled (private/local networks stay direct)."
+else
+  generator_log "LAN exclusion: disabled (full IPv4/IPv6 tunnel)."
+fi
 
 if ! (
   cd -- "${work_dir}"
@@ -86,7 +104,12 @@ fi
 generator_log "Registration accepted; peer parameters were received from the API."
 
 sed -E "s|^[[:space:]]*Endpoint[[:space:]]*=.*$|Endpoint = ${ENDPOINT}|" \
-  "${work_dir}/warp.conf" >"${work_dir}/final.conf"
+  "${work_dir}/warp.conf" >"${work_dir}/endpoint.conf"
+if ! awg_apply_route_policy \
+  "${work_dir}/endpoint.conf" "${work_dir}/final.conf" "${EXCLUDE_LAN}"; then
+  generator_log "Could not apply the selected LAN routing policy."
+  exit 70
+fi
 install -D -m 600 "${work_dir}/final.conf" "${OUTPUT}"
 config_size=$(wc -c <"${OUTPUT}")
 generator_log "Configuration assembled locally and saved (${config_size} bytes; secrets hidden)."

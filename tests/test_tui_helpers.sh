@@ -55,6 +55,7 @@ tui_dialog() {
     *--checklist*) printf '"github" "youtube" "cloudflare"\n' ;;
     *"Частота проверки"*) printf '5min\n' ;;
     *"Попытки получения профиля"*) printf '10\n' ;;
+    *"Доступ к локальной сети"*) printf 'exclude\n' ;;
     *"Источник генерации"*) printf 'official\n' ;;
     *--radiolist*) printf 'majority\n' ;;
     *) return 1 ;;
@@ -71,6 +72,8 @@ tui_select_quorum
 assert_equal 2 "${check_quorum}"
 tui_select_interval
 assert_equal 5min "${check_interval}"
+tui_select_lan_mode
+assert_equal 1 "${exclude_lan}"
 tui_select_generator_source
 assert_equal 'https://api.cloudflareclient.com/v0i1909051800' "${generator_api_url}"
 assert_equal '' "${generator_https_proxy}"

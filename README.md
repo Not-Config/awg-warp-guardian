@@ -87,6 +87,8 @@ sudo ./install.sh
   интервал в формате `30s`, `2min`, `1h`.
 - выбрать до 5, 10 или 20 попыток получения рабочего профиля; для новой
   установки по умолчанию выполняется до 10 попыток.
+- оставить LAN вне VPN (включено по умолчанию) или явно разрешить full-tunnel
+  для частных сетей.
 
 При повторном запуске первым пунктом можно обновить файлы программы, не меняя
 действующий профиль и настройки проверок. Отмена на любом экране происходит до
@@ -157,6 +159,7 @@ CHECK_URLS="https://github.com/ https://telegram.org/ https://example.org/health
 CHECK_QUORUM=2
 CHECK_INTERVAL=2min
 INITIAL_GENERATION_ATTEMPTS=10
+EXCLUDE_LAN=1
 ```
 
 Запросы выполняются с `curl --interface awg-existing`, поэтому доступ напрямую не
@@ -184,8 +187,23 @@ journalctl -u awg-warp-guardian.service -n 100 --no-pager
 
 ## Защита SSH и маршрутов
 
-Новый WARP-конфиг содержит `AllowedIPs = 0.0.0.0/0, ::/0`. Guardian сохраняет
-из старого `[Interface]` следующие директивы:
+По умолчанию TUI включает «Исключить LAN». Тогда `AllowedIPs` содержит только
+нелокальные IPv4-диапазоны и глобальный IPv6 `2000::/3`: RFC1918 (`10/8`,
+`172.16/12`, `192.168/16`), loopback, link-local и IPv6 ULA остаются вне VPN.
+Это снижает риск потерять SSH и доступ к локальным сервисам при запуске
+full-tunnel на удалённом сервере.
+
+Для уже установленного профиля режим можно применить повторным запуском:
+
+```bash
+sudo ./install.sh --no-tui --exclude-lan --reconfigure
+```
+
+Перед изменением существующего `.conf` установщик сохраняет его копию в
+`/var/lib/awg-warp-guardian/backups`. Вернуть полный IPv4/IPv6-туннель, включая
+частные адреса, можно только явным параметром `--include-lan`.
+
+Guardian также сохраняет из старого `[Interface]` следующие директивы:
 
 ```ini
 PRESERVE_DIRECTIVES=Table,PreUp,PostUp,PreDown,PostDown,S1,S2,S3,S4,Jc,Jmin,Jmax,H1,H2,H3,H4,I1,I2,I3,I4,I5
@@ -293,7 +311,7 @@ sudo ./uninstall.sh
 ## Разработка
 
 ```bash
-bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh tests/test_generator_wrapper.sh
+bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh src/route-policy.sh tests/test_generator_wrapper.sh
 python3 -m compileall -q src tests
 python3 -m unittest discover -s tests -v
 bash tests/test_tui_helpers.sh

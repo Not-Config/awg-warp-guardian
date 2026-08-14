@@ -9,6 +9,7 @@ check_urls="https://github.com/ https://telegram.org/ https://www.cloudflare.com
 check_quorum=2
 check_interval="2min"
 initial_generation_attempts=10
+exclude_lan=1
 generator_api_url="https://api.cloudflareclient.com/v0i1909051800"
 generator_https_proxy=""
 skip_package_install=0
@@ -20,6 +21,7 @@ urls_option_set=0
 quorum_option_set=0
 interval_option_set=0
 initial_attempts_option_set=0
+lan_option_set=0
 endpoints_option_set=0
 generator_api_option_set=0
 generator_proxy_option_set=0
@@ -41,6 +43,8 @@ Options:
   --quorum NUMBER        Required successful site checks (default: 2)
   --check-interval TIME  Timer interval: 30s, 1min, 2min, 1h (default: 2min)
   --initial-attempts N   New-profile attempts: 1-20 (default: 10)
+  --exclude-lan          Keep private/local networks outside VPN (default)
+  --include-lan          Route private networks through VPN
   --endpoint HOST:PORT   WARP endpoint; repeat to add rotation alternatives
   --generator-api URL    Compatible HTTPS WARP registration API base URL
   --generator-proxy URL  HTTP/HTTPS proxy used only for WARP registration
@@ -100,6 +104,20 @@ while (($#)); do
       initial_attempts_option_set=1
       configuration_args_seen=1
       shift 2
+      ;;
+    --exclude-lan)
+      exclude_lan=1
+      settings_option_set=1
+      lan_option_set=1
+      configuration_args_seen=1
+      shift
+      ;;
+    --include-lan)
+      exclude_lan=0
+      settings_option_set=1
+      lan_option_set=1
+      configuration_args_seen=1
+      shift
       ;;
     --endpoint)
       custom_endpoints+=("${2:?missing value for --endpoint}")
@@ -172,6 +190,7 @@ for required in \
   "${PROJECT_DIR}/src/guardian.py" \
   "${PROJECT_DIR}/src/generate-warp-config" \
   "${PROJECT_DIR}/src/install-tui.sh" \
+  "${PROJECT_DIR}/src/route-policy.sh" \
   "${PROJECT_DIR}/vendor/warp_generator.sh" \
   "${PROJECT_DIR}/vendor/LICENSE.ImMALWARE"; do
   if [[ ! -f "${required}" ]]; then
@@ -179,6 +198,9 @@ for required in \
     exit 66
   fi
 done
+
+# shellcheck disable=SC1091
+source "${PROJECT_DIR}/src/route-policy.sh"
 
 run_tui=0
 if [[ ${tui_mode} == force ]]; then
@@ -263,6 +285,14 @@ if [[ -s "${guardian_config}" ]]; then
       initial_generation_attempts=${existing_initial_attempts}
     fi
   fi
+  if ((lan_option_set == 0)); then
+    existing_exclude_lan=$(sed -n 's/^EXCLUDE_LAN=//p' "${guardian_config}" | head -n 1)
+    existing_exclude_lan=${existing_exclude_lan%\"}
+    existing_exclude_lan=${existing_exclude_lan#\"}
+    if [[ -n ${existing_exclude_lan} ]]; then
+      exclude_lan=${existing_exclude_lan}
+    fi
+  fi
   if ((endpoints_option_set == 0 && identity_option_set == 0)); then
     existing_endpoints=$(sed -n 's/^WARP_ENDPOINTS=//p' "${guardian_config}" | head -n 1)
     existing_endpoints=${existing_endpoints%\"}
@@ -312,6 +342,10 @@ fi
 if [[ ! ${initial_generation_attempts} =~ ^[1-9][0-9]*$ ]] || \
   ((initial_generation_attempts > 20)); then
   echo "--initial-attempts must be an integer between 1 and 20" >&2
+  exit 65
+fi
+if ! awg_valid_lan_mode "${exclude_lan}"; then
+  echo "LAN routing mode must be 0 (include) or 1 (exclude)" >&2
   exit 65
 fi
 generator_api_url=${generator_api_url%/}
@@ -448,6 +482,8 @@ install -D -m 755 "${PROJECT_DIR}/src/guardian.py" \
   /usr/local/lib/awg-warp-guardian/guardian.py
 install -D -m 755 "${PROJECT_DIR}/src/generate-warp-config" \
   /usr/local/lib/awg-warp-guardian/generate-warp-config
+install -D -m 644 "${PROJECT_DIR}/src/route-policy.sh" \
+  /usr/local/lib/awg-warp-guardian/route-policy.sh
 install -D -m 755 "${PROJECT_DIR}/vendor/warp_generator.sh" \
   /usr/local/lib/awg-warp-guardian/vendor/warp_generator.sh
 install -D -m 644 "${PROJECT_DIR}/vendor/LICENSE.ImMALWARE" \
@@ -466,6 +502,7 @@ CHECK_URLS="${check_urls}"
 CHECK_QUORUM=${check_quorum}
 CHECK_INTERVAL=${check_interval}
 INITIAL_GENERATION_ATTEMPTS=${initial_generation_attempts}
+EXCLUDE_LAN=${exclude_lan}
 CURL_TIMEOUT=12
 BIND_TO_INTERFACE=1
 REQUIRE_WARP=1
@@ -509,6 +546,27 @@ mv -f -- "${timer_dropin_tmp}" \
   /etc/systemd/system/awg-warp-guardian.timer.d/10-interval.conf
 systemctl daemon-reload
 
+route_policy_changed=0
+if [[ -s ${config_path} && ${lan_option_set} -eq 1 ]]; then
+  route_policy_backup="/var/lib/awg-warp-guardian/backups/$(basename -- "${config_path}").before-route-policy.$(date -u +%Y%m%dT%H%M%SZ).$$"
+  install -D -m 600 "${config_path}" "${route_policy_backup}"
+  route_policy_tmp=$(mktemp "$(dirname -- "${config_path}")/.route-policy.XXXXXX")
+  if ! awg_apply_route_policy \
+    "${config_path}" "${route_policy_tmp}" "${exclude_lan}"; then
+    rm -f -- "${route_policy_tmp}"
+    echo "Could not apply the selected LAN route policy; the profile was not changed." >&2
+    exit 65
+  fi
+  chmod 600 "${route_policy_tmp}"
+  mv -f -- "${route_policy_tmp}" "${config_path}"
+  route_policy_changed=1
+  if [[ ${exclude_lan} == 1 ]]; then
+    echo "[installer] LAN exclusion applied; previous profile backed up to ${route_policy_backup}"
+  else
+    echo "[installer] Full-tunnel LAN routing applied; previous profile backed up to ${route_policy_backup}"
+  fi
+fi
+
 generated_config=0
 initial_generation_attempt=1
 if [[ ! -s "${config_path}" ]]; then
@@ -525,6 +583,7 @@ if [[ ! -s "${config_path}" ]]; then
     fi
     if WARP_ENDPOINT="${initial_endpoint}" \
       WARP_API_BASE_URL="${generator_api_url}" \
+      WARP_EXCLUDE_LAN="${exclude_lan}" \
       HTTPS_PROXY="${generator_https_proxy}" \
       https_proxy="${generator_https_proxy}" \
       /usr/local/lib/awg-warp-guardian/generate-warp-config "${config_path}"; then
@@ -566,7 +625,12 @@ tunnel_was_active=0
 if systemctl is-active --quiet "awg-quick@${interface}.service"; then
   tunnel_was_active=1
 fi
-systemctl enable --now "awg-quick@${interface}.service"
+systemctl enable "awg-quick@${interface}.service" >/dev/null
+if ((route_policy_changed == 1 && tunnel_was_active == 1)); then
+  systemctl restart "awg-quick@${interface}.service"
+else
+  systemctl start "awg-quick@${interface}.service"
+fi
 echo "[installer] Tunnel service started; waiting 12 seconds for a handshake..."
 sleep 12
 installation_healthy=0

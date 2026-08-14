@@ -59,6 +59,15 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "GENERATOR_API_URL"):
                 guardian.https_base_url(invalid, "GENERATOR_API_URL")
 
+    def test_settings_read_lan_exclusion_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "guardian.env"
+            config.write_text(
+                "CHECK_URLS=https://one.test\nEXCLUDE_LAN=0\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(guardian.Settings.from_file(config).exclude_lan)
+
 
 class MergeTests(unittest.TestCase):
     def test_preserves_routing_hooks_but_not_old_credentials(self):
@@ -143,6 +152,7 @@ def make_settings(directory: str) -> guardian.Settings:
         generator_timeout=5,
         generator_api_url="https://mirror.example/v0i1909051800",
         generator_https_proxy="",
+        exclude_lan=True,
         endpoints=("162.159.192.1:500",),
         preserve_directives=("PostUp", "S3", "I1"),
         allow_hard_restart=True,
@@ -190,6 +200,7 @@ class GeneratorTests(unittest.TestCase):
                 runner.generator_environment["WARP_API_BASE_URL"],
                 "https://mirror.example/v0i1909051800",
             )
+            self.assertEqual(runner.generator_environment["WARP_EXCLUDE_LAN"], "1")
             candidate.unlink()
             candidate.parent.rmdir()
 

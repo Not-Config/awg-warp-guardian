@@ -37,6 +37,8 @@ fi
 mkdir -p "${TEST_DIR}/fixture/src" "${TEST_DIR}/fixture/vendor"
 cp "${PROJECT_DIR}/src/generate-warp-config" \
   "${TEST_DIR}/fixture/src/generate-warp-config"
+cp "${PROJECT_DIR}/src/route-policy.sh" \
+  "${TEST_DIR}/fixture/src/route-policy.sh"
 chmod 755 "${TEST_DIR}/fixture/src/generate-warp-config"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
@@ -62,5 +64,35 @@ if grep -Fq 'LOCAL_TEST_SECRET' "${TEST_DIR}/progress.log"; then
   exit 1
 fi
 grep -Fq 'PrivateKey = LOCAL_TEST_SECRET' "${TEST_DIR}/generated.conf"
+grep -Fq '2000::/3' "${TEST_DIR}/generated.conf"
+if grep -Eq 'AllowedIPs.*(10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)' \
+  "${TEST_DIR}/generated.conf"; then
+  echo "LAN-excluded config contains a private network" >&2
+  exit 1
+fi
+if grep -Fq 'AllowedIPs = 0.0.0.0/0' "${TEST_DIR}/generated.conf"; then
+  echo "LAN-excluded config still contains a full IPv4 tunnel" >&2
+  exit 1
+fi
+
+WARP_EXCLUDE_LAN=0 \
+WARP_API_BASE_URL=https://mirror.example/v0i1909051800 \
+  "${TEST_DIR}/fixture/src/generate-warp-config" \
+  "${TEST_DIR}/full-tunnel.conf" \
+  >/dev/null 2>"${TEST_DIR}/full-tunnel-progress.log"
+grep -Fq 'AllowedIPs = 0.0.0.0/0, ::/0' "${TEST_DIR}/full-tunnel.conf"
+grep -Fq '[generator] LAN exclusion: disabled' \
+  "${TEST_DIR}/full-tunnel-progress.log"
+
+set +e
+WARP_EXCLUDE_LAN=2 \
+  "${PROJECT_DIR}/src/generate-warp-config" "${TEST_DIR}/bad-lan-mode.conf" \
+  >/dev/null 2>"${TEST_DIR}/bad-lan-mode.log"
+status=$?
+set -e
+if [[ ${status} -ne 65 ]]; then
+  echo "expected invalid LAN mode to exit 65, got ${status}" >&2
+  exit 1
+fi
 
 echo "Generator wrapper tests passed"

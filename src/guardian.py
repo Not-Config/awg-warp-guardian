@@ -118,6 +118,7 @@ class Settings:
     generator_timeout: int
     generator_api_url: str
     generator_https_proxy: str
+    exclude_lan: bool
     endpoints: tuple[str, ...]
     preserve_directives: tuple[str, ...]
     allow_hard_restart: bool
@@ -207,6 +208,7 @@ class Settings:
                 "GENERATOR_API_URL",
             ),
             generator_https_proxy=values.get("GENERATOR_HTTPS_PROXY", ""),
+            exclude_lan=env_bool(values, "EXCLUDE_LAN", True),
             endpoints=endpoints,
             preserve_directives=preserve,
             allow_hard_restart=env_bool(values, "ALLOW_HARD_RESTART", True),
@@ -601,6 +603,9 @@ class Guardian:
         environment = os.environ.copy()
         environment["WARP_ENDPOINT"] = endpoint
         environment["WARP_API_BASE_URL"] = self.settings.generator_api_url
+        environment["WARP_EXCLUDE_LAN"] = (
+            "1" if self.settings.exclude_lan else "0"
+        )
         if self.settings.generator_https_proxy:
             environment["HTTPS_PROXY"] = self.settings.generator_https_proxy
             environment["https_proxy"] = self.settings.generator_https_proxy
@@ -613,6 +618,10 @@ class Guardian:
                 else "direct HTTPS connection",
             )
             LOG.info("Candidate endpoint: %s", endpoint)
+            LOG.info(
+                "LAN exclusion: %s",
+                "enabled" if self.settings.exclude_lan else "disabled",
+            )
             generated = self.runner.run(
                 [str(self.settings.generator_path), str(candidate)],
                 timeout=self.settings.generator_timeout,
