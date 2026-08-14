@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "Usage: generate-warp-config OUTPUT.conf" >&2
+  exit 64
+fi
+
+readonly OUTPUT=$1
+readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+readonly UPSTREAM_SCRIPT="${SCRIPT_DIR}/vendor/warp_generator.sh"
+readonly ENDPOINT=${WARP_ENDPOINT:-162.159.192.1:500}
+
+if [[ ! -x "${UPSTREAM_SCRIPT}" ]]; then
+  echo "Bundled WARP generator is missing" >&2
+  exit 69
+fi
+if [[ ! "${ENDPOINT}" =~ ^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$ ]]; then
+  echo "WARP_ENDPOINT has an invalid host:port value" >&2
+  exit 65
+fi
+endpoint_port=${ENDPOINT##*:}
+endpoint_port_number=$((10#${endpoint_port}))
+if ((endpoint_port_number < 1 || endpoint_port_number > 65535)); then
+  echo "WARP_ENDPOINT port must be between 1 and 65535" >&2
+  exit 65
+fi
+
+work_dir=$(mktemp -d)
+cleanup() {
+  rm -rf -- "${work_dir}"
+}
+trap cleanup EXIT
+
+(
+  cd -- "${work_dir}"
+  # The bundled MIT-licensed generator is sanitized and performs no package
+  # management or secret-bearing terminal output.
+  bash "${UPSTREAM_SCRIPT}" >/dev/null 2>&1
+)
+
+if [[ ! -s "${work_dir}/warp.conf" ]]; then
+  echo "WARP generator did not produce a config" >&2
+  exit 70
+fi
+
+sed -E "s|^[[:space:]]*Endpoint[[:space:]]*=.*$|Endpoint = ${ENDPOINT}|" \
+  "${work_dir}/warp.conf" >"${work_dir}/final.conf"
+install -D -m 600 "${work_dir}/final.conf" "${OUTPUT}"
