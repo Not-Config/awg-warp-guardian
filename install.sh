@@ -8,6 +8,8 @@ config_path=""
 check_urls="https://github.com/ https://telegram.org/ https://www.cloudflare.com/cdn-cgi/trace"
 check_quorum=2
 check_interval="2min"
+generator_api_url="https://api.cloudflareclient.com/v0i1909051800"
+generator_https_proxy=""
 skip_package_install=0
 no_start=0
 reconfigure=0
@@ -17,6 +19,8 @@ urls_option_set=0
 quorum_option_set=0
 interval_option_set=0
 endpoints_option_set=0
+generator_api_option_set=0
+generator_proxy_option_set=0
 custom_endpoints=()
 tui_mode=auto
 configuration_args_seen=0
@@ -35,6 +39,9 @@ Options:
   --quorum NUMBER        Required successful site checks (default: 2)
   --check-interval TIME  Timer interval: 30s, 1min, 2min, 1h (default: 2min)
   --endpoint HOST:PORT   WARP endpoint; repeat to add rotation alternatives
+  --generator-api URL    Compatible HTTPS WARP registration API base URL
+  --generator-proxy URL  HTTP/HTTPS proxy used only for WARP registration
+  --no-generator-proxy   Clear a previously configured registration proxy
   --tui                  Force the interactive installer
   --no-tui               Disable the interactive installer
   --skip-package-install Do not use apt or add the Amnezia PPA
@@ -90,6 +97,27 @@ while (($#)); do
       endpoints_option_set=1
       configuration_args_seen=1
       shift 2
+      ;;
+    --generator-api)
+      generator_api_url=${2:?missing value for --generator-api}
+      settings_option_set=1
+      generator_api_option_set=1
+      configuration_args_seen=1
+      shift 2
+      ;;
+    --generator-proxy)
+      generator_https_proxy=${2:?missing value for --generator-proxy}
+      settings_option_set=1
+      generator_proxy_option_set=1
+      configuration_args_seen=1
+      shift 2
+      ;;
+    --no-generator-proxy)
+      generator_https_proxy=""
+      settings_option_set=1
+      generator_proxy_option_set=1
+      configuration_args_seen=1
+      shift
       ;;
     --tui)
       tui_mode=force
@@ -225,6 +253,20 @@ if [[ -s "${guardian_config}" ]]; then
       IFS=, read -r -a custom_endpoints <<<"${existing_endpoints}"
     fi
   fi
+  if ((generator_api_option_set == 0)); then
+    existing_generator_api=$(sed -n 's/^GENERATOR_API_URL=//p' "${guardian_config}" | head -n 1)
+    existing_generator_api=${existing_generator_api%\"}
+    existing_generator_api=${existing_generator_api#\"}
+    if [[ -n ${existing_generator_api} ]]; then
+      generator_api_url=${existing_generator_api}
+    fi
+  fi
+  if ((generator_proxy_option_set == 0)); then
+    existing_generator_proxy=$(sed -n 's/^GENERATOR_HTTPS_PROXY=//p' "${guardian_config}" | head -n 1)
+    existing_generator_proxy=${existing_generator_proxy%\"}
+    existing_generator_proxy=${existing_generator_proxy#\"}
+    generator_https_proxy=${existing_generator_proxy}
+  fi
 fi
 if [[ ! "${interface}" =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]]; then
   echo "Invalid Linux interface name: ${interface}" >&2
@@ -248,6 +290,37 @@ fi
 if ((interval_seconds < 30)); then
   echo "--check-interval cannot be shorter than 30 seconds" >&2
   exit 65
+fi
+generator_api_url=${generator_api_url%/}
+if [[ ! ${generator_api_url} =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]+)*$ ]]; then
+  echo "--generator-api must be an HTTPS base URL without credentials, query, or fragment" >&2
+  exit 65
+fi
+generator_api_authority=${generator_api_url#https://}
+generator_api_authority=${generator_api_authority%%/*}
+if [[ ${generator_api_authority} == *:* ]]; then
+  generator_api_port=${generator_api_authority##*:}
+  generator_api_port_number=$((10#${generator_api_port}))
+  if ((generator_api_port_number < 1 || generator_api_port_number > 65535)); then
+    echo "--generator-api port must be between 1 and 65535" >&2
+    exit 65
+  fi
+fi
+if [[ -n ${generator_https_proxy} && ! ${generator_https_proxy} =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?$ ]]; then
+  echo "--generator-proxy must look like http://host:port or https://host:port" >&2
+  exit 65
+fi
+if [[ -n ${generator_https_proxy} ]]; then
+  generator_proxy_authority=${generator_https_proxy#*://}
+  generator_proxy_authority=${generator_proxy_authority%/}
+  if [[ ${generator_proxy_authority} == *:* ]]; then
+    generator_proxy_port=${generator_proxy_authority##*:}
+    generator_proxy_port_number=$((10#${generator_proxy_port}))
+    if ((generator_proxy_port_number < 1 || generator_proxy_port_number > 65535)); then
+      echo "--generator-proxy port must be between 1 and 65535" >&2
+      exit 65
+    fi
+  fi
 fi
 if ((${#custom_urls[@]})); then
   check_urls="${custom_urls[*]}"
@@ -384,7 +457,8 @@ WARP_ENDPOINTS=${warp_endpoints}
 PRESERVE_DIRECTIVES=Table,PreUp,PostUp,PreDown,PostDown,S1,S2,S3,S4,Jc,Jmin,Jmax,H1,H2,H3,H4,I1,I2,I3,I4,I5
 GENERATOR_PATH=/usr/local/lib/awg-warp-guardian/generate-warp-config
 GENERATOR_TIMEOUT=90
-GENERATOR_HTTPS_PROXY=
+GENERATOR_API_URL=${generator_api_url}
+GENERATOR_HTTPS_PROXY=${generator_https_proxy}
 STATE_DIR=/var/lib/awg-warp-guardian
 EOF
   chmod 600 "${guardian_tmp}"
@@ -417,6 +491,9 @@ if [[ ! -s "${config_path}" ]]; then
   echo "Generating the initial Cloudflare WARP configuration..."
   initial_endpoint=${warp_endpoints%%,*}
   WARP_ENDPOINT="${initial_endpoint}" \
+  WARP_API_BASE_URL="${generator_api_url}" \
+  HTTPS_PROXY="${generator_https_proxy}" \
+  https_proxy="${generator_https_proxy}" \
     /usr/local/lib/awg-warp-guardian/generate-warp-config "${config_path}"
   generated_config=1
 else

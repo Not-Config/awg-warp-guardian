@@ -11,7 +11,8 @@ done
 
 priv="${1:-$(wg genkey | tr -d '\n')}"
 pub="${2:-$(printf "%s" "${priv}" | wg pubkey | tr -d '\n')}"
-api="https://api.cloudflareclient.com/v0i1909051800"
+api="${WARP_API_BASE_URL:-https://api.cloudflareclient.com/v0i1909051800}"
+api=${api%/}
 ins() { curl -s -H 'User-Agent: okhttp/3.12.1' -H 'Content-Type: application/json' -X "$1" "${api}/$2" "${@:3}"; }
 sec() { ins "$1" "$2" -H "Authorization: Bearer $3" "${@:4}"; }
 response=$(ins POST "reg" -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%TZ)\",\"key\":\"${pub}\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")

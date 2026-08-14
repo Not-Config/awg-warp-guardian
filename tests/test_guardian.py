@@ -43,6 +43,22 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "CHECK_QUORUM"):
                 guardian.Settings.from_file(config)
 
+    def test_generator_api_requires_trusted_https_base_url(self):
+        self.assertEqual(
+            guardian.https_base_url(
+                "https://mirror.example/warp/", "GENERATOR_API_URL"
+            ),
+            "https://mirror.example/warp",
+        )
+        for invalid in (
+            "http://mirror.example/warp",
+            "https://user:secret@mirror.example/warp",
+            "https://mirror.example/warp?target=other",
+            "https://mirror.example:99999/warp",
+        ):
+            with self.assertRaisesRegex(ValueError, "GENERATOR_API_URL"):
+                guardian.https_base_url(invalid, "GENERATOR_API_URL")
+
 
 class MergeTests(unittest.TestCase):
     def test_preserves_routing_hooks_but_not_old_credentials(self):
@@ -125,6 +141,7 @@ def make_settings(directory: str) -> guardian.Settings:
         backups_keep=2,
         generator_path=Path("/fake/generator"),
         generator_timeout=5,
+        generator_api_url="https://mirror.example/v0i1909051800",
         generator_https_proxy="",
         endpoints=("162.159.192.1:500",),
         preserve_directives=("PostUp", "S3", "I1"),
@@ -147,9 +164,11 @@ Endpoint = 162.159.192.1:500
 class GeneratorRunner:
     def __init__(self, generated_text=VALID_CONFIG):
         self.generated_text = generated_text
+        self.generator_environment = None
 
     def run(self, args, **kwargs):
         if args[0] == "/fake/generator":
+            self.generator_environment = kwargs.get("env")
             Path(args[1]).write_text(self.generated_text, encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, "", "")
         if args[:2] == ["awg-quick", "strip"]:
@@ -161,10 +180,15 @@ class GeneratorTests(unittest.TestCase):
     def test_candidate_basename_is_valid_for_awg_quick(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = make_settings(directory)
-            instance = guardian.Guardian(settings, GeneratorRunner())
+            runner = GeneratorRunner()
+            instance = guardian.Guardian(settings, runner)
             candidate = instance.generate_candidate(guardian.State())
             self.assertEqual(candidate.name, "awg-test.conf")
             self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                runner.generator_environment["WARP_API_BASE_URL"],
+                "https://mirror.example/v0i1909051800",
+            )
             candidate.unlink()
             candidate.parent.rmdir()
 

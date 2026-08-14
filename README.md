@@ -77,6 +77,8 @@ sudo ./install.sh
 - создать новый стандартный Cloudflare WARP-профиль;
 - создать профиль со своими WARP endpoint-ами или вручную указать готовый
   `.conf`;
+- выбрать официальный API генерации, независимый прокси или совместимое
+  HTTPS-зеркало;
 - выбрать GitHub, Telegram, YouTube, Discord, Google, Cloudflare Trace и
   добавить собственные HTTP/HTTPS-адреса;
 - считать VPN рабочим, когда доступен каждый сайт, строгое большинство или
@@ -211,15 +213,47 @@ sudo ./install.sh --interface awg-new \
   --reconfigure
 ```
 
+## Источник перевыпуска конфигурации
+
+`warp-gen.github.io` не используется во время автоматической ротации: новый
+PrivateKey создаётся локально на сервере, а регистрация выполняется через API
+Cloudflare. По умолчанию используется:
+
+```ini
+GENERATOR_API_URL=https://api.cloudflareclient.com/v0i1909051800
+GENERATOR_HTTPS_PROXY=
+```
+
+Если официальный домен недоступен, безопаснее направить только запрос
+регистрации через независимый прокси. Это можно выбрать в TUI или настроить
+через CLI:
+
+```bash
+sudo ./install.sh --no-tui \
+  --generator-proxy http://127.0.0.1:8080 \
+  --reconfigure
+```
+
+Также поддерживается собственное совместимое HTTPS-зеркало, которое реализует
+те же маршруты `/reg` и `/reg/<id>`:
+
+```bash
+sudo ./install.sh --no-tui \
+  --generator-api https://mirror.example/v0i1909051800 \
+  --no-generator-proxy \
+  --reconfigure
+```
+
+Приватный ключ зеркалу не передаётся, но оно может вернуть собственные
+параметры peer. Поэтому нельзя указывать случайный публичный «генератор» —
+используйте только своё или доверенное зеркало. URL принимается только по
+HTTPS, без логина, query-параметров и fragment.
+
 Новая регистрация обращается к API Cloudflare. Пока старый туннель хотя бы
 частично работает, запрос уйдёт через него. Если одновременно недоступны и
 туннель, и API напрямую, ротация физически невозможна: старый конфиг останется
-на месте, а timer повторит попытку позже. Для такого bootstrap-сценария можно
-указать независимый HTTPS-прокси (не зависящий от этого же WARP):
-
-```ini
-GENERATOR_HTTPS_PROXY=http://127.0.0.1:8080
-```
+на месте, а timer повторит попытку позже. Прокси при этом не должен зависеть от
+того же WARP-туннеля.
 
 ## Обновление и удаление
 
@@ -243,10 +277,11 @@ sudo ./uninstall.sh
 ## Разработка
 
 ```bash
-bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh
+bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh tests/test_generator_wrapper.sh
 python3 -m compileall -q src tests
 python3 -m unittest discover -s tests -v
 bash tests/test_tui_helpers.sh
+bash tests/test_generator_wrapper.sh
 ```
 
 Основной проект распространяется по MIT. Для локальной перевыдачи ключей

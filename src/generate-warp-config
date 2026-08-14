@@ -8,8 +8,15 @@ fi
 
 readonly OUTPUT=$1
 readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-readonly UPSTREAM_SCRIPT="${SCRIPT_DIR}/vendor/warp_generator.sh"
+UPSTREAM_SCRIPT="${SCRIPT_DIR}/vendor/warp_generator.sh"
+if [[ ! -x ${UPSTREAM_SCRIPT} && -x ${SCRIPT_DIR}/../vendor/warp_generator.sh ]]; then
+  UPSTREAM_SCRIPT="${SCRIPT_DIR}/../vendor/warp_generator.sh"
+fi
+readonly UPSTREAM_SCRIPT
 readonly ENDPOINT=${WARP_ENDPOINT:-162.159.192.1:500}
+API_BASE_URL=${WARP_API_BASE_URL:-https://api.cloudflareclient.com/v0i1909051800}
+API_BASE_URL=${API_BASE_URL%/}
+readonly API_BASE_URL
 
 if [[ ! -x "${UPSTREAM_SCRIPT}" ]]; then
   echo "Bundled WARP generator is missing" >&2
@@ -25,6 +32,20 @@ if ((endpoint_port_number < 1 || endpoint_port_number > 65535)); then
   echo "WARP_ENDPOINT port must be between 1 and 65535" >&2
   exit 65
 fi
+if [[ ! ${API_BASE_URL} =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]+)*$ ]]; then
+  echo "WARP_API_BASE_URL must be an HTTPS base URL without a query or fragment" >&2
+  exit 65
+fi
+api_authority=${API_BASE_URL#https://}
+api_authority=${api_authority%%/*}
+if [[ ${api_authority} == *:* ]]; then
+  api_port=${api_authority##*:}
+  api_port_number=$((10#${api_port}))
+  if ((api_port_number < 1 || api_port_number > 65535)); then
+    echo "WARP_API_BASE_URL port must be between 1 and 65535" >&2
+    exit 65
+  fi
+fi
 
 work_dir=$(mktemp -d)
 cleanup() {
@@ -36,7 +57,8 @@ trap cleanup EXIT
   cd -- "${work_dir}"
   # The bundled MIT-licensed generator is sanitized and performs no package
   # management or secret-bearing terminal output.
-  bash "${UPSTREAM_SCRIPT}" >/dev/null 2>&1
+  WARP_API_BASE_URL="${API_BASE_URL}" \
+    bash "${UPSTREAM_SCRIPT}" >/dev/null 2>&1
 )
 
 if [[ ! -s "${work_dir}/warp.conf" ]]; then

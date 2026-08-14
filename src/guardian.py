@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +70,33 @@ def env_int(
     return parsed
 
 
+def https_base_url(value: str, key: str) -> str:
+    normalized = value.rstrip("/")
+    parsed = urlsplit(normalized)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{key} contains an invalid port") from exc
+    if (
+        not re.fullmatch(
+            r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?"
+            r"(?:/[A-Za-z0-9._~/-]+)*",
+            normalized,
+        )
+        or parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ValueError(
+            f"{key} must be an HTTPS base URL without credentials, query, or fragment"
+        )
+    return normalized
+
+
 @dataclass(frozen=True)
 class Settings:
     interface: str
@@ -88,6 +116,7 @@ class Settings:
     backups_keep: int
     generator_path: Path
     generator_timeout: int
+    generator_api_url: str
     generator_https_proxy: str
     endpoints: tuple[str, ...]
     preserve_directives: tuple[str, ...]
@@ -170,6 +199,13 @@ class Settings:
                 )
             ),
             generator_timeout=env_int(values, "GENERATOR_TIMEOUT", 90, 5),
+            generator_api_url=https_base_url(
+                values.get(
+                    "GENERATOR_API_URL",
+                    "https://api.cloudflareclient.com/v0i1909051800",
+                ),
+                "GENERATOR_API_URL",
+            ),
             generator_https_proxy=values.get("GENERATOR_HTTPS_PROXY", ""),
             endpoints=endpoints,
             preserve_directives=preserve,
@@ -550,6 +586,7 @@ class Guardian:
         ]
         environment = os.environ.copy()
         environment["WARP_ENDPOINT"] = endpoint
+        environment["WARP_API_BASE_URL"] = self.settings.generator_api_url
         if self.settings.generator_https_proxy:
             environment["HTTPS_PROXY"] = self.settings.generator_https_proxy
             environment["https_proxy"] = self.settings.generator_https_proxy

@@ -44,6 +44,26 @@ tui_valid_url() {
   [[ $1 =~ ^https?://[A-Za-z0-9:/?\&._=%+#@~-]+$ ]]
 }
 
+tui_valid_generator_api_url() {
+  [[ $1 =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]+)*/?$ ]] || return 1
+  tui_valid_url_port "$1"
+}
+
+tui_valid_generator_proxy() {
+  [[ $1 =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?$ ]] || return 1
+  tui_valid_url_port "$1"
+}
+
+tui_valid_url_port() {
+  local authority port
+
+  authority=${1#*://}
+  authority=${authority%%/*}
+  [[ ${authority} == *:* ]] || return 0
+  port=${authority##*:}
+  ((10#${port} >= 1 && 10#${port} <= 65535))
+}
+
 tui_interval_seconds() {
   local interval=$1
   local amount unit
@@ -222,6 +242,8 @@ tui_select_profile() {
   quorum_option_set=1
   interval_option_set=1
   endpoints_option_set=1
+  generator_api_option_set=1
+  generator_proxy_option_set=1
   reconfigure=1
   return 1
 }
@@ -336,27 +358,92 @@ tui_select_interval() {
   check_interval=${interval_choice}
 }
 
+tui_select_generator_source() {
+  local source_choice custom_api proxy_url
+
+  while true; do
+    if ! source_choice=$(tui_dialog --title "Источник генерации" \
+      --radiolist "Откуда получать регистрацию Cloudflare WARP?" \
+      17 92 5 \
+      official "Официальный API Cloudflare напрямую (рекомендуется)" ON \
+      proxy "Официальный API через независимый HTTPS-прокси" OFF \
+      custom "Совместимое пользовательское HTTPS-зеркало" OFF); then
+      return 130
+    fi
+
+    case "${source_choice}" in
+      official)
+        generator_api_url="https://api.cloudflareclient.com/v0i1909051800"
+        generator_https_proxy=""
+        return 0
+        ;;
+      proxy)
+        while true; do
+          if ! proxy_url=$(tui_dialog --title "Прокси генератора" \
+            --inputbox "Независимый HTTP/HTTPS-прокси, например http://127.0.0.1:8080:" \
+            12 90 "http://127.0.0.1:8080"); then
+            return 130
+          fi
+          if tui_valid_generator_proxy "${proxy_url}"; then
+            generator_api_url="https://api.cloudflareclient.com/v0i1909051800"
+            generator_https_proxy=${proxy_url%/}
+            return 0
+          fi
+          tui_dialog --title "Некорректный прокси" \
+            --msgbox "Используйте адрес вида http://host:port или https://host:port без пути." 9 78
+        done
+        ;;
+      custom)
+        if ! tui_dialog --title "Доверие к зеркалу" \
+          --yes-button "Понимаю" --no-button "Назад" \
+          --yesno "Приватный ключ останется на сервере, но зеркало сможет вернуть свои параметры peer. Используйте только собственное или доверенное совместимое зеркало." \
+          13 88; then
+          continue
+        fi
+        while true; do
+          if ! custom_api=$(tui_dialog --title "HTTPS-зеркало WARP API" \
+            --inputbox "Базовый URL совместимого API без /reg в конце:" \
+            12 90 "https://mirror.example/v0i1909051800"); then
+            return 130
+          fi
+          if tui_valid_generator_api_url "${custom_api}"; then
+            generator_api_url=${custom_api%/}
+            generator_https_proxy=""
+            return 0
+          fi
+          tui_dialog --title "Некорректный API URL" \
+            --msgbox "Нужен HTTPS URL без логина, query и fragment, например https://mirror.example/v0i1909051800" 10 90
+        done
+        ;;
+    esac
+  done
+}
+
 tui_confirm_install() {
-  local endpoint_summary site_lines summary url
+  local endpoint_summary generator_summary site_lines summary url
 
   if ((${#custom_endpoints[@]})); then
     endpoint_summary=$(IFS=,; printf '%s' "${custom_endpoints[*]}")
   else
     endpoint_summary="из профиля или стандартный Cloudflare"
   fi
+  generator_summary=${generator_api_url}
+  if [[ -n ${generator_https_proxy} ]]; then
+    generator_summary+=" через ${generator_https_proxy}"
+  fi
   site_lines=""
   for url in "${custom_urls[@]}"; do
     site_lines+="\n • ${url}"
   done
   summary=$(printf \
-    'Интерфейс: %s\nПрофиль: %s\nEndpoint: %s\nЧастота проверки: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
+    'Интерфейс: %s\nПрофиль: %s\nEndpoint: %s\nИсточник генерации: %s\nЧастота проверки: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
     "${interface}" "${config_path:-будет создан автоматически}" \
-    "${endpoint_summary}" "${check_interval}" "${site_lines}" \
+    "${endpoint_summary}" "${generator_summary}" "${check_interval}" "${site_lines}" \
     "${check_quorum}" "${#custom_urls[@]}")
 
   if tui_dialog --title "Подтверждение установки" \
     --yes-button "Установить" --no-button "Назад" \
-    --yesno "${summary}" 25 94; then
+    --yesno "${summary}" 27 96; then
     return 0
   fi
   return 2
@@ -382,6 +469,7 @@ tui_install_once() {
   done
   tui_select_quorum || return $?
   tui_select_interval || return $?
+  tui_select_generator_source || return $?
   tui_confirm_install
 }
 

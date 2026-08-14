@@ -30,6 +30,13 @@ tui_valid_endpoint '[2606:4700:d0::a29f:c001]:2408'
 tui_valid_url 'https://example.org/health?source=tui&ok=1'
 ! tui_valid_url 'ftp://example.org/'
 ! tui_valid_url 'https://example.org/bad path'
+tui_valid_generator_api_url 'https://mirror.example/v0i1909051800'
+! tui_valid_generator_api_url 'http://mirror.example/v0i1909051800'
+! tui_valid_generator_api_url 'https://user:secret@mirror.example/api'
+! tui_valid_generator_api_url 'https://mirror.example:99999/api'
+tui_valid_generator_proxy 'http://127.0.0.1:8080'
+! tui_valid_generator_proxy 'http://127.0.0.1:99999'
+! tui_valid_generator_proxy 'socks5://127.0.0.1:1080'
 assert_equal 30 "$(tui_interval_seconds 30s)"
 assert_equal 120 "$(tui_interval_seconds 2min)"
 assert_equal 3600 "$(tui_interval_seconds 1h)"
@@ -41,6 +48,7 @@ tui_dialog() {
   case "$*" in
     *--checklist*) printf '"github" "youtube" "cloudflare"\n' ;;
     *"Частота проверки"*) printf '5min\n' ;;
+    *"Источник генерации"*) printf 'official\n' ;;
     *--radiolist*) printf 'majority\n' ;;
     *) return 1 ;;
   esac
@@ -56,6 +64,9 @@ tui_select_quorum
 assert_equal 2 "${check_quorum}"
 tui_select_interval
 assert_equal 5min "${check_interval}"
+tui_select_generator_source
+assert_equal 'https://api.cloudflareclient.com/v0i1909051800' "${generator_api_url}"
+assert_equal '' "${generator_https_proxy}"
 
 if tui_calculate_quorum unsupported 3 >/dev/null 2>&1; then
   echo "unsupported quorum mode was accepted" >&2
