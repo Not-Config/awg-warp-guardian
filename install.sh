@@ -299,7 +299,7 @@ if [[ -s "${guardian_config}" ]]; then
     existing_endpoints=$(sed -n 's/^WARP_ENDPOINTS=//p' "${guardian_config}" | head -n 1)
     existing_endpoints=${existing_endpoints%\"}
     existing_endpoints=${existing_endpoints#\"}
-    if [[ -n ${existing_endpoints} ]]; then
+    if [[ -n ${existing_endpoints} && ${existing_endpoints} != 162.159.192.1:500 ]]; then
       IFS=, read -r -a custom_endpoints <<<"${existing_endpoints}"
     fi
   fi
@@ -416,7 +416,7 @@ if [[ $(basename -- "${config_path}") != "${interface}.conf" ]]; then
   exit 65
 fi
 
-warp_endpoints=162.159.192.1:500
+warp_endpoints="162.159.192.1:2408,162.159.192.1:500,162.159.192.1:1701,162.159.192.1:4500"
 if ((${#custom_endpoints[@]})); then
   for endpoint in "${custom_endpoints[@]}"; do
     if [[ ! "${endpoint}" =~ ^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$ ]]; then
@@ -436,7 +436,18 @@ elif [[ -s "${config_path}" ]]; then
     's/^[[:space:]]*Endpoint[[:space:]]*=[[:space:]]*([^[:space:]#]+).*$/\1/p' \
     "${config_path}" | head -n 1)
   if [[ "${existing_endpoint}" =~ ^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$ ]]; then
-    warp_endpoints=${existing_endpoint}
+    if [[ "${existing_endpoint}" =~ ^(162\.159\.192\.[0-9]{1,3}):(2408|500|1701|4500)$ ]]; then
+      existing_endpoint_host=${BASH_REMATCH[1]}
+      existing_endpoint_port=${existing_endpoint##*:}
+      warp_endpoints=${existing_endpoint}
+      for fallback_port in 2408 500 1701 4500; do
+        if [[ ${fallback_port} != "${existing_endpoint_port}" ]]; then
+          warp_endpoints+=",${existing_endpoint_host}:${fallback_port}"
+        fi
+      done
+    else
+      warp_endpoints=${existing_endpoint}
+    fi
   fi
 fi
 
@@ -521,7 +532,7 @@ ROTATION_COOLDOWN=1800
 MAX_ROTATIONS_PER_DAY=4
 BACKUPS_KEEP=10
 WARP_ENDPOINTS=${warp_endpoints}
-PRESERVE_DIRECTIVES=Table,PreUp,PostUp,PreDown,PostDown,S1,S2,S3,S4,Jc,Jmin,Jmax,H1,H2,H3,H4,I1,I2,I3,I4,I5
+PRESERVE_DIRECTIVES=Table,PreUp,PostUp,PreDown,PostDown
 GENERATOR_PATH=/usr/local/lib/awg-warp-guardian/generate-warp-config
 GENERATOR_TIMEOUT=90
 GENERATOR_API_URL=${generator_api_url}

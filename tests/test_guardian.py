@@ -3,8 +3,10 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -68,6 +70,23 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertFalse(guardian.Settings.from_file(config).exclude_lan)
 
+    def test_settings_default_to_supported_warp_ports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "guardian.env"
+            config.write_text(
+                "CHECK_URLS=https://one.test\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                guardian.Settings.from_file(config).endpoints,
+                (
+                    "162.159.192.1:2408",
+                    "162.159.192.1:500",
+                    "162.159.192.1:1701",
+                    "162.159.192.1:4500",
+                ),
+            )
+
 
 class MergeTests(unittest.TestCase):
     def test_preserves_routing_hooks_but_not_old_credentials(self):
@@ -105,6 +124,35 @@ Endpoint = 162.159.192.1:500
         self.assertIn("S3 = 7", merged)
         self.assertIn("I1 = <b 0x1234>", merged)
         self.assertNotIn("I1 = 0xabcd", merged)
+
+    def test_managed_route_hook_is_regenerated_for_candidate_endpoint(self):
+        current = """[Interface]
+PrivateKey = OLD
+PreUp = /usr/local/sbin/awg-warp-route-endpoint up old.example
+PostDown = /usr/local/sbin/awg-warp-route-endpoint down old.example
+
+[Peer]
+PublicKey = OLD_PEER
+AllowedIPs = 0.0.0.0/0
+Endpoint = old.example:500
+"""
+        candidate = """[Interface]
+PrivateKey = NEW
+PreUp = /usr/local/sbin/awg-warp-route-endpoint up 162.159.192.1
+PostDown = /usr/local/sbin/awg-warp-route-endpoint down 162.159.192.1
+
+[Peer]
+PublicKey = NEW_PEER
+AllowedIPs = 0.0.0.0/0
+Endpoint = 162.159.192.1:2408
+"""
+        merged = guardian.merge_interface_directives(
+            current,
+            candidate,
+            ("PreUp", "PostDown"),
+        )
+        self.assertNotIn("old.example", merged)
+        self.assertIn("route-endpoint up 162.159.192.1", merged)
 
     def test_basic_validation_reports_missing_fields(self):
         missing = guardian.basic_validate_config("[Interface]\nPrivateKey = x\n")
@@ -244,6 +292,143 @@ class GeneratorTests(unittest.TestCase):
             self.assertFalse(allowed)
             self.assertIn("cooldown", reason)
             self.assertTrue(instance.may_rotate(state, force=True)[0])
+
+
+class ParallelHealthRunner:
+    def __init__(self):
+        self.active_curls = 0
+        self.max_active_curls = 0
+        self.lock = threading.Lock()
+
+    def run(self, args, **kwargs):
+        if args[0] == "curl":
+            with self.lock:
+                self.active_curls += 1
+                self.max_active_curls = max(
+                    self.max_active_curls, self.active_curls
+                )
+            time.sleep(0.03)
+            with self.lock:
+                self.active_curls -= 1
+            stdout = "warp=on\n" if "--output" not in args else ""
+            return subprocess.CompletedProcess(args, 0, stdout, "")
+        if args[:3] == ["systemctl", "is-active", "--quiet"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:3] == ["ip", "link", "show"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:3] == ["awg", "show", "awg-test"]:
+            return subprocess.CompletedProcess(
+                args, 0, f"peer {int(time.time())}\n", ""
+            )
+        raise AssertionError(f"unexpected command: {args}")
+
+
+class HealthTests(unittest.TestCase):
+    def test_site_and_trace_probes_run_in_parallel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                make_settings(directory),
+                check_urls=(
+                    "https://one.test",
+                    "https://two.test",
+                    "https://three.test",
+                    "https://four.test",
+                ),
+                check_quorum=3,
+            )
+            runner = ParallelHealthRunner()
+            result = guardian.Guardian(settings, runner).health()
+            self.assertTrue(result.healthy)
+            self.assertGreater(runner.max_active_curls, 1)
+
+
+class RotationGuardian(guardian.Guardian):
+    def __init__(self, settings, health_results):
+        super().__init__(settings)
+        self.active = True
+        self.health_results = iter(health_results)
+        self.events = []
+        self.generated_endpoints = []
+
+    def command_ok(self, args, timeout=None):
+        if args[:3] == ["systemctl", "is-active", "--quiet"]:
+            return self.active
+        if args[:2] == ["systemctl", "stop"]:
+            self.events.append("stop")
+            self.active = False
+            return True
+        raise AssertionError(f"unexpected command: {args}")
+
+    def generate_candidate(self, state):
+        self.assert_tunnel_stopped()
+        endpoint = self.settings.endpoints[
+            state.endpoint_index % len(self.settings.endpoints)
+        ]
+        self.generated_endpoints.append(endpoint)
+        self.events.append(f"generate:{endpoint}")
+        candidate_dir = Path(
+            tempfile.mkdtemp(prefix=".candidate.", dir=self.settings.config_path.parent)
+        )
+        candidate = candidate_dir / self.settings.config_path.name
+        candidate.write_text(VALID_CONFIG, encoding="utf-8")
+        state.endpoint_index = (state.endpoint_index + 1) % len(
+            self.settings.endpoints
+        )
+        return candidate
+
+    def assert_tunnel_stopped(self):
+        if self.active:
+            raise AssertionError("generator ran through the active tunnel")
+
+    def hard_restart(self):
+        self.events.append("restart")
+        self.active = True
+        return True
+
+    def wait_and_health(self):
+        healthy = next(self.health_results)
+        return guardian.Health(
+            healthy=healthy,
+            service_active=True,
+            interface_up=True,
+            sites_ok=1 if healthy else 0,
+            sites_total=1,
+            warp_on=healthy,
+            handshake_age=0 if healthy else None,
+        )
+
+
+class RotationTests(unittest.TestCase):
+    def test_rotation_stops_tunnel_before_registration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                make_settings(directory),
+                endpoints=("162.159.192.1:500",),
+            )
+            settings.config_path.write_text(VALID_CONFIG, encoding="utf-8")
+            instance = RotationGuardian(settings, [True])
+            self.assertTrue(instance.rotate(guardian.State(), force=True))
+            self.assertEqual(
+                instance.events[:2],
+                ["stop", "generate:162.159.192.1:500"],
+            )
+
+    def test_rotation_tries_next_endpoint_after_failed_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                make_settings(directory),
+                endpoints=(
+                    "162.159.192.1:500",
+                    "162.159.192.1:2408",
+                ),
+            )
+            settings.config_path.write_text(VALID_CONFIG, encoding="utf-8")
+            instance = RotationGuardian(settings, [False, True])
+            self.assertTrue(instance.rotate(guardian.State(), force=True))
+            self.assertEqual(
+                instance.generated_endpoints,
+                ["162.159.192.1:500", "162.159.192.1:2408"],
+            )
 
 
 if __name__ == "__main__":

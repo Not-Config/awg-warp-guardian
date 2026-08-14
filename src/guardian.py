@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -151,7 +152,13 @@ class Settings:
             raise ValueError("CHECK_QUORUM cannot exceed the number of CHECK_URLS")
         endpoints = tuple(
             item.strip()
-            for item in values.get("WARP_ENDPOINTS", "162.159.192.1:500").split(",")
+            for item in values.get(
+                "WARP_ENDPOINTS",
+                (
+                    "162.159.192.1:2408,162.159.192.1:500,"
+                    "162.159.192.1:1701,162.159.192.1:4500"
+                ),
+            ).split(",")
             if item.strip()
         )
         if not endpoints:
@@ -160,11 +167,7 @@ class Settings:
             item.strip()
             for item in values.get(
                 "PRESERVE_DIRECTIVES",
-                (
-                    "Table,PreUp,PostUp,PreDown,PostDown,"
-                    "S1,S2,S3,S4,Jc,Jmin,Jmax,H1,H2,H3,H4,"
-                    "I1,I2,I3,I4,I5"
-                ),
+                "Table,PreUp,PostUp,PreDown,PostDown",
             ).split(",")
             if item.strip()
         )
@@ -336,7 +339,11 @@ def merge_interface_directives(
                 continue
             if in_interface and "=" in line:
                 key = line.split("=", 1)[0].strip().lower()
-                if key in wanted:
+                managed_hook = re.search(
+                    r"/usr/local/sbin/awg-warp-(?:lan-rules|route-endpoint)\b",
+                    line,
+                )
+                if key in wanted and not managed_hook:
                     result.append(line.rstrip())
         return result
 
@@ -393,6 +400,14 @@ class Guardian:
             args += ["--interface", self.settings.interface]
         return args
 
+    @staticmethod
+    def curl_error(probe: subprocess.CompletedProcess[str]) -> str:
+        detail = " ".join(probe.stderr.strip().split())
+        if len(detail) > 180:
+            detail = detail[:177] + "..."
+        suffix = f": {detail}" if detail else ""
+        return f"curl exit {probe.returncode}{suffix}"
+
     def health(self) -> Health:
         errors: list[str] = []
         LOG.info("Checking VPN health through interface %s", self.settings.interface)
@@ -418,41 +433,84 @@ class Guardian:
         )
 
         sites_ok = 0
+        warp_on = not self.settings.require_warp
+        site_results: list[
+            tuple[str, subprocess.CompletedProcess[str] | None, str | None]
+        ] = []
+        trace_result: subprocess.CompletedProcess[str] | None = None
+        trace_failure: str | None = None
         if interface_up:
-            for url in self.settings.check_urls:
+            def curl_probe(
+                url: str, discard_output: bool
+            ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+                args = self.curl_args()
+                if discard_output:
+                    args += ["--output", "/dev/null"]
                 try:
-                    probe = self.runner.run(
-                        self.curl_args() + ["--output", "/dev/null", url],
-                        timeout=self.settings.curl_timeout + 2,
+                    return (
+                        self.runner.run(
+                            args + [url], timeout=self.settings.curl_timeout + 2
+                        ),
+                        None,
                     )
-                    if probe.returncode == 0:
-                        sites_ok += 1
-                        LOG.info("Site probe passed: %s", url)
-                    else:
-                        errors.append(f"site probe failed: {url}")
-                        LOG.warning("Site probe failed: %s", url)
-                except (OSError, subprocess.TimeoutExpired):
-                    errors.append(f"site probe timed out: {url}")
-                    LOG.warning("Site probe timed out: %s", url)
+                except subprocess.TimeoutExpired:
+                    return None, "timed out"
+                except OSError as exc:
+                    return None, str(exc)
+
+            worker_count = min(
+                8,
+                len(self.settings.check_urls)
+                + (1 if self.settings.require_warp else 0),
+            )
+            with ThreadPoolExecutor(max_workers=max(1, worker_count)) as executor:
+                site_futures = [
+                    (url, executor.submit(curl_probe, url, True))
+                    for url in self.settings.check_urls
+                ]
+                trace_future = (
+                    executor.submit(curl_probe, self.settings.trace_url, False)
+                    if self.settings.require_warp
+                    else None
+                )
+                site_results = [
+                    (url, *future.result()) for url, future in site_futures
+                ]
+                if trace_future is not None:
+                    trace_result, trace_failure = trace_future.result()
+
+        for url, probe, failure in site_results:
+            if probe is not None and probe.returncode == 0:
+                sites_ok += 1
+                LOG.info("Site probe passed: %s", url)
+            elif probe is not None:
+                errors.append(f"site probe failed: {url}")
+                LOG.warning(
+                    "Site probe failed: %s (%s)", url, self.curl_error(probe)
+                )
+            else:
+                errors.append(f"site probe timed out: {url}")
+                LOG.warning("Site probe failed: %s (%s)", url, failure or "error")
         if sites_ok < self.settings.check_quorum:
             errors.append(
                 f"site quorum failed ({sites_ok}/{self.settings.check_quorum})"
             )
 
-        warp_on = not self.settings.require_warp
         if interface_up and self.settings.require_warp:
-            try:
-                trace = self.runner.run(
-                    self.curl_args() + [self.settings.trace_url],
-                    timeout=self.settings.curl_timeout + 2,
-                )
-                warp_on = trace.returncode == 0 and bool(
-                    re.search(r"(?m)^warp=on\s*$", trace.stdout)
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                warp_on = False
+            warp_on = trace_result is not None and trace_result.returncode == 0 and bool(
+                re.search(r"(?m)^warp=on\s*$", trace_result.stdout)
+            )
             if not warp_on:
                 errors.append("Cloudflare trace does not report warp=on")
+                if trace_result is not None and trace_result.returncode != 0:
+                    LOG.warning(
+                        "Cloudflare trace failed (%s)",
+                        self.curl_error(trace_result),
+                    )
+                elif trace_result is not None:
+                    LOG.warning("Cloudflare trace response does not contain warp=on")
+                elif trace_failure:
+                    LOG.warning("Cloudflare trace failed (%s)", trace_failure)
             LOG.info("Cloudflare trace: warp=%s", "on" if warp_on else "off")
 
         handshake_age: int | None = None
@@ -576,15 +634,23 @@ class Guardian:
             old.unlink(missing_ok=True)
         return backup
 
-    def may_rotate(self, state: State, force: bool = False) -> tuple[bool, str]:
+    def may_rotate(
+        self,
+        state: State,
+        force: bool = False,
+        ignore_cooldown: bool = False,
+    ) -> tuple[bool, str]:
         if force:
             return True, "forced"
         now = int(time.time())
         recent = [value for value in state.rotation_attempts if value > now - 86400]
-        if now - state.last_rotation_attempt < self.settings.rotation_cooldown:
-            return False, "rotation cooldown is active"
         if len(recent) >= self.settings.max_rotations_per_day:
             return False, "daily rotation limit reached"
+        if (
+            not ignore_cooldown
+            and now - state.last_rotation_attempt < self.settings.rotation_cooldown
+        ):
+            return False, "rotation cooldown is active"
         return True, "allowed"
 
     def generate_candidate(self, state: State) -> Path:
@@ -651,12 +717,45 @@ class Guardian:
                 raise RuntimeError("WARP config generator did not complete") from exc
             raise
 
-    def rotate(self, state: State, force: bool = False) -> bool:
-        allowed, reason = self.may_rotate(state, force)
+    def rotate_once(
+        self,
+        state: State,
+        force: bool = False,
+        ignore_cooldown: bool = False,
+    ) -> bool:
+        allowed, reason = self.may_rotate(state, force, ignore_cooldown)
         if not allowed:
             LOG.error("Configuration rotation skipped: %s", reason)
             state.last_action = f"rotation skipped: {reason}"
             return False
+
+        service_was_active = self.command_ok(
+            [
+                self.settings.systemctl_command,
+                "is-active",
+                "--quiet",
+                self.settings.service,
+            ]
+        )
+        stopped_for_generation = False
+        if service_was_active and self.settings.allow_hard_restart:
+            LOG.warning(
+                "Stopping the unhealthy tunnel before WARP registration so the "
+                "API uses the physical connection"
+            )
+            if not self.command_ok(
+                [
+                    self.settings.systemctl_command,
+                    "stop",
+                    self.settings.service,
+                ],
+                timeout=45,
+            ):
+                LOG.error("Could not stop the tunnel before WARP registration")
+                state.last_action = "rotation could not stop tunnel"
+                return False
+            stopped_for_generation = True
+
         now = int(time.time())
         state.last_rotation_attempt = now
         state.rotation_attempts = [
@@ -668,13 +767,23 @@ class Guardian:
             candidate = self.generate_candidate(state)
         except (OSError, ValueError, RuntimeError) as exc:
             LOG.error("Could not generate a valid replacement config: %s", exc)
+            state.endpoint_index = (state.endpoint_index + 1) % len(
+                self.settings.endpoints
+            )
+            if stopped_for_generation:
+                LOG.warning("Restarting the previous tunnel after generation failure")
+                self.hard_restart()
             state.last_action = "rotation generation failed"
             return False
 
         backup = self.backup_current()
         current = self.settings.config_path
         try:
-            if current.exists() and self.soft_reload(candidate):
+            if (
+                not stopped_for_generation
+                and current.exists()
+                and self.soft_reload(candidate)
+            ):
                 probe = self.wait_and_health()
                 if probe.healthy:
                     os.replace(candidate, current)
@@ -712,6 +821,29 @@ class Guardian:
                 candidate.parent.rmdir()
             except OSError:
                 pass
+
+    def rotate(self, state: State, force: bool = False) -> bool:
+        attempts = max(1, len(self.settings.endpoints))
+        for number in range(1, attempts + 1):
+            endpoint = self.settings.endpoints[
+                state.endpoint_index % len(self.settings.endpoints)
+            ]
+            LOG.warning(
+                "WARP replacement attempt %s/%s using %s",
+                number,
+                attempts,
+                endpoint,
+            )
+            if self.rotate_once(
+                state,
+                force=force,
+                ignore_cooldown=number > 1,
+            ):
+                return True
+            if state.last_action.startswith("rotation skipped:"):
+                break
+        LOG.error("No replacement WARP configuration passed health checks")
+        return False
 
     def recover(self, state: State, force_rotation: bool = False) -> bool:
         if self.settings.config_path.exists() and self.soft_reload(
