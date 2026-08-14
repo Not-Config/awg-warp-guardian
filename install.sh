@@ -13,6 +13,8 @@ reconfigure=0
 identity_option_set=0
 settings_option_set=0
 custom_endpoints=()
+tui_mode=auto
+configuration_args_seen=0
 
 usage() {
   cat <<'EOF'
@@ -27,6 +29,8 @@ Options:
   --check-url URL        Replace defaults; repeat to add multiple URLs
   --quorum NUMBER        Required successful site checks (default: 2)
   --endpoint HOST:PORT   WARP endpoint; repeat to add rotation alternatives
+  --tui                  Force the interactive installer
+  --no-tui               Disable the interactive installer
   --skip-package-install Do not use apt or add the Amnezia PPA
   --no-start             Install files but do not start the tunnel/timer
   --reconfigure          Replace the existing guardian.env
@@ -44,27 +48,40 @@ while (($#)); do
     --interface)
       interface=${2:?missing value for --interface}
       identity_option_set=1
+      configuration_args_seen=1
       shift 2
       ;;
     --config)
       config_path=${2:?missing value for --config}
       identity_option_set=1
+      configuration_args_seen=1
       shift 2
       ;;
     --check-url)
       custom_urls+=("${2:?missing value for --check-url}")
       settings_option_set=1
+      configuration_args_seen=1
       shift 2
       ;;
     --quorum)
       check_quorum=${2:?missing value for --quorum}
       settings_option_set=1
+      configuration_args_seen=1
       shift 2
       ;;
     --endpoint)
       custom_endpoints+=("${2:?missing value for --endpoint}")
       settings_option_set=1
+      configuration_args_seen=1
       shift 2
+      ;;
+    --tui)
+      tui_mode=force
+      shift
+      ;;
+    --no-tui)
+      tui_mode=off
+      shift
       ;;
     --skip-package-install)
       skip_package_install=1
@@ -96,6 +113,52 @@ if ((EUID != 0)); then
 fi
 
 guardian_config=/etc/awg-warp-guardian/guardian.env
+
+for required in \
+  "${PROJECT_DIR}/src/guardian.py" \
+  "${PROJECT_DIR}/src/generate-warp-config" \
+  "${PROJECT_DIR}/src/install-tui.sh" \
+  "${PROJECT_DIR}/vendor/warp_generator.sh" \
+  "${PROJECT_DIR}/vendor/LICENSE.ImMALWARE"; do
+  if [[ ! -f "${required}" ]]; then
+    echo "Incomplete checkout; missing ${required}" >&2
+    exit 66
+  fi
+done
+
+run_tui=0
+if [[ ${tui_mode} == force ]]; then
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    echo "--tui requires an interactive terminal." >&2
+    exit 64
+  fi
+  run_tui=1
+elif [[ ${tui_mode} == auto && ${configuration_args_seen} -eq 0 && -t 0 && -t 1 ]]; then
+  run_tui=1
+fi
+
+if ((run_tui == 1)); then
+  if ! command -v whiptail >/dev/null 2>&1; then
+    if ((skip_package_install == 1)); then
+      echo "The interactive installer requires whiptail." >&2
+      echo "Install it first or rerun with --no-tui." >&2
+      exit 69
+    fi
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y whiptail
+  fi
+  # shellcheck disable=SC1091
+  source "${PROJECT_DIR}/src/install-tui.sh"
+  if run_install_tui; then
+    :
+  else
+    tui_status=$?
+    echo "Installation cancelled; no VPN settings were changed." >&2
+    exit "${tui_status}"
+  fi
+fi
+
 if [[ -s "${guardian_config}" ]]; then
   if ((reconfigure == 0 && (identity_option_set == 1 || settings_option_set == 1))); then
     echo "Guardian is already configured in ${guardian_config}." >&2
@@ -127,21 +190,16 @@ if ((${#custom_urls[@]})); then
   check_urls="${custom_urls[*]}"
 fi
 read -r -a url_array <<<"${check_urls}"
+for check_url in "${url_array[@]}"; do
+  if [[ ! ${check_url} =~ ^https?://[A-Za-z0-9:/?\&._=%+#@~-]+$ ]]; then
+    echo "Invalid check URL (only HTTP/HTTPS URLs without spaces are supported): ${check_url}" >&2
+    exit 65
+  fi
+done
 if ((check_quorum > ${#url_array[@]})); then
   echo "--quorum cannot exceed the number of check URLs" >&2
   exit 65
 fi
-
-for required in \
-  "${PROJECT_DIR}/src/guardian.py" \
-  "${PROJECT_DIR}/src/generate-warp-config" \
-  "${PROJECT_DIR}/vendor/warp_generator.sh" \
-  "${PROJECT_DIR}/vendor/LICENSE.ImMALWARE"; do
-  if [[ ! -f "${required}" ]]; then
-    echo "Incomplete checkout; missing ${required}" >&2
-    exit 66
-  fi
-done
 
 if [[ -z "${config_path}" ]]; then
   if [[ -f "/etc/amnezia/amneziawg/${interface}.conf" ]]; then
@@ -192,7 +250,7 @@ install_packages() {
   apt-get update
   apt-get install -y \
     ca-certificates curl iproute2 iptables jq python3 resolvconf util-linux \
-    wireguard-tools
+    whiptail wireguard-tools
   if command -v awg >/dev/null 2>&1 && command -v awg-quick >/dev/null 2>&1; then
     return
   fi

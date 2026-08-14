@@ -27,6 +27,37 @@ Ubuntu-сервере. Проект проверяет не только сос�
 одним сайтом не создавала бесконечные WARP-регистрации. Старые конфиги хранятся
 с правами `0600` в `/var/lib/awg-warp-guardian/backups`.
 
+## Интерактивная установка
+
+При обычном запуске в терминале автоматически открывается русскоязычный TUI:
+
+```bash
+git clone https://github.com/Not-Config/awg-warp-guardian.git
+cd awg-warp-guardian
+sudo ./install.sh
+```
+
+В нём можно:
+
+- подключить найденный профиль из `/etc/amnezia/amneziawg` или
+  `/etc/amneziawg`;
+- создать новый стандартный Cloudflare WARP-профиль;
+- создать профиль со своими WARP endpoint-ами или вручную указать готовый
+  `.conf`;
+- выбрать GitHub, Telegram, YouTube, Discord, Google, Cloudflare Trace и
+  добавить собственные HTTP/HTTPS-адреса;
+- считать VPN рабочим, когда доступен каждый сайт, строгое большинство или
+  хотя бы один из выбранных адресов.
+
+При повторном запуске первым пунктом можно обновить файлы программы, не меняя
+действующий профиль и настройки проверок. Отмена на любом экране происходит до
+записи VPN-настроек. Для автоматизации и серверов без интерактивного терминала
+все прежние аргументы командной строки сохранены; TUI можно явно отключить:
+
+```bash
+sudo ./install.sh --no-tui --interface awg-warp
+```
+
 ## Быстрый запуск на существующем `tg-bt`
 
 На сервере уже используется профиль `awg-new`, поэтому команда будет такой:
@@ -169,9 +200,10 @@ sudo ./uninstall.sh
 ## Разработка
 
 ```bash
-bash -n install.sh uninstall.sh src/generate-warp-config
+bash -n install.sh uninstall.sh src/generate-warp-config src/install-tui.sh
 python3 -m compileall -q src tests
 python3 -m unittest discover -s tests -v
+bash tests/test_tui_helpers.sh
 ```
 
 Основной проект распространяется по MIT. Для локальной перевыдачи ключей
