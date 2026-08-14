@@ -85,6 +85,10 @@ tui_valid_interval() {
   ((seconds >= 30))
 }
 
+tui_valid_initial_attempts() {
+  [[ $1 =~ ^[1-9][0-9]*$ ]] && ((10#$1 <= 20))
+}
+
 tui_add_unique_path() {
   local candidate=$1
   local existing
@@ -241,6 +245,7 @@ tui_select_profile() {
   urls_option_set=1
   quorum_option_set=1
   interval_option_set=1
+  initial_attempts_option_set=1
   endpoints_option_set=1
   generator_api_option_set=1
   generator_proxy_option_set=1
@@ -358,6 +363,38 @@ tui_select_interval() {
   check_interval=${interval_choice}
 }
 
+tui_select_initial_attempts() {
+  local attempts_choice custom_attempts
+
+  if ! attempts_choice=$(tui_dialog --title "Попытки получения профиля" \
+    --radiolist "Сколько разных регистраций запросить, если конфигурации не проходят проверку?" \
+    17 92 5 \
+    5 "До 5 попыток" OFF \
+    10 "До 10 попыток (рекомендуется)" ON \
+    20 "До 20 попыток" OFF \
+    custom "Указать количество" OFF); then
+    return 130
+  fi
+
+  if [[ ${attempts_choice} == custom ]]; then
+    while true; do
+      if ! custom_attempts=$(tui_dialog --title "Количество попыток" \
+        --inputbox "Введите число от 1 до 20:" \
+        10 62 "10"); then
+        return 130
+      fi
+      if tui_valid_initial_attempts "${custom_attempts}"; then
+        attempts_choice=${custom_attempts}
+        break
+      fi
+      tui_dialog --title "Некорректное количество" \
+        --msgbox "Допустимо целое число от 1 до 20." 9 58
+    done
+  fi
+  initial_generation_attempts=${attempts_choice}
+  initial_attempts_option_set=1
+}
+
 tui_select_generator_source() {
   local source_choice custom_api proxy_url
 
@@ -420,7 +457,7 @@ tui_select_generator_source() {
 }
 
 tui_confirm_install() {
-  local endpoint_summary generator_summary site_lines summary url
+  local endpoint_summary generator_summary site_lines summary url attempts_summary
 
   if ((${#custom_endpoints[@]})); then
     endpoint_summary=$(IFS=,; printf '%s' "${custom_endpoints[*]}")
@@ -435,10 +472,16 @@ tui_confirm_install() {
   for url in "${custom_urls[@]}"; do
     site_lines+="\n • ${url}"
   done
+  if [[ -n ${config_path} && -s ${config_path} ]]; then
+    attempts_summary="существующий профиль не перевыпускается при установке"
+  else
+    attempts_summary="до ${initial_generation_attempts} новых регистраций"
+  fi
   summary=$(printf \
-    'Интерфейс: %s\nПрофиль: %s\nEndpoint: %s\nИсточник генерации: %s\nЧастота проверки: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
+    'Интерфейс: %s\nПрофиль: %s\nEndpoint: %s\nИсточник генерации: %s\nПопытки: %s\nЧастота проверки: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
     "${interface}" "${config_path:-будет создан автоматически}" \
-    "${endpoint_summary}" "${generator_summary}" "${check_interval}" "${site_lines}" \
+    "${endpoint_summary}" "${generator_summary}" "${attempts_summary}" \
+    "${check_interval}" "${site_lines}" \
     "${check_quorum}" "${#custom_urls[@]}")
 
   if tui_dialog --title "Подтверждение установки" \
@@ -470,6 +513,9 @@ tui_install_once() {
   tui_select_quorum || return $?
   tui_select_interval || return $?
   tui_select_generator_source || return $?
+  if [[ -z ${config_path} || ! -s ${config_path} ]]; then
+    tui_select_initial_attempts || return $?
+  fi
   tui_confirm_install
 }
 

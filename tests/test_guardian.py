@@ -162,15 +162,16 @@ Endpoint = 162.159.192.1:500
 
 
 class GeneratorRunner:
-    def __init__(self, generated_text=VALID_CONFIG):
+    def __init__(self, generated_text=VALID_CONFIG, generated_stderr=""):
         self.generated_text = generated_text
+        self.generated_stderr = generated_stderr
         self.generator_environment = None
 
     def run(self, args, **kwargs):
         if args[0] == "/fake/generator":
             self.generator_environment = kwargs.get("env")
             Path(args[1]).write_text(self.generated_text, encoding="utf-8")
-            return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(args, 0, "", self.generated_stderr)
         if args[:2] == ["awg-quick", "strip"]:
             return subprocess.CompletedProcess(args, 0, "stripped config", "")
         raise AssertionError(f"unexpected command: {args}")
@@ -200,6 +201,24 @@ class GeneratorTests(unittest.TestCase):
                 instance.generate_candidate(guardian.State())
             leftovers = list(Path(directory).glob(".awg-guardian-candidate.*"))
             self.assertEqual(leftovers, [])
+
+    def test_safe_generator_progress_is_forwarded_to_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = make_settings(directory)
+            runner = GeneratorRunner(
+                generated_stderr=(
+                    "[generator] Registration API: https://mirror.example/api\n"
+                    "PrivateKey = MUST_NOT_BE_LOGGED\n"
+                )
+            )
+            instance = guardian.Guardian(settings, runner)
+            with self.assertLogs("awg-warp-guardian", level="INFO") as captured:
+                candidate = instance.generate_candidate(guardian.State())
+            output = "\n".join(captured.output)
+            self.assertIn("[generator] Registration API", output)
+            self.assertNotIn("MUST_NOT_BE_LOGGED", output)
+            candidate.unlink()
+            candidate.parent.rmdir()
 
     def test_rotation_limits_repeated_registration(self):
         with tempfile.TemporaryDirectory() as directory:

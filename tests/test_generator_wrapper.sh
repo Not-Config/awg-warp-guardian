@@ -34,4 +34,33 @@ if [[ -e ${TEST_DIR}/invalid.conf ]]; then
   exit 1
 fi
 
+mkdir -p "${TEST_DIR}/fixture/src" "${TEST_DIR}/fixture/vendor"
+cp "${PROJECT_DIR}/src/generate-warp-config" \
+  "${TEST_DIR}/fixture/src/generate-warp-config"
+chmod 755 "${TEST_DIR}/fixture/src/generate-warp-config"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -Eeuo pipefail' \
+  'printf "[generator] POST /reg: successful HTTP response received.\n" >&2' \
+  'printf "%s\n" "[Interface]" "PrivateKey = LOCAL_TEST_SECRET" "Address = 172.16.0.2/32" "" "[Peer]" "PublicKey = TEST_PEER" "AllowedIPs = 0.0.0.0/0" "Endpoint = 162.159.192.1:500" > warp.conf' \
+  >"${TEST_DIR}/fixture/vendor/warp_generator.sh"
+chmod 755 "${TEST_DIR}/fixture/vendor/warp_generator.sh"
+
+WARP_API_BASE_URL=https://mirror.example/v0i1909051800 \
+  "${TEST_DIR}/fixture/src/generate-warp-config" \
+  "${TEST_DIR}/generated.conf" \
+  >"${TEST_DIR}/stdout.log" 2>"${TEST_DIR}/progress.log"
+
+grep -Fq '[generator] Registration API: https://mirror.example/v0i1909051800' \
+  "${TEST_DIR}/progress.log"
+grep -Fq '[generator] POST /reg: successful HTTP response received.' \
+  "${TEST_DIR}/progress.log"
+grep -Fq '[generator] Configuration assembled locally and saved' \
+  "${TEST_DIR}/progress.log"
+if grep -Fq 'LOCAL_TEST_SECRET' "${TEST_DIR}/progress.log"; then
+  echo "generator progress leaked a private key" >&2
+  exit 1
+fi
+grep -Fq 'PrivateKey = LOCAL_TEST_SECRET' "${TEST_DIR}/generated.conf"
+
 echo "Generator wrapper tests passed"

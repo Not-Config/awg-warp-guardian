@@ -43,11 +43,18 @@ assert_equal 3600 "$(tui_interval_seconds 1h)"
 tui_valid_interval 30s
 ! tui_valid_interval 29s
 ! tui_valid_interval '2 minutes'
+tui_valid_initial_attempts 1
+tui_valid_initial_attempts 10
+tui_valid_initial_attempts 20
+! tui_valid_initial_attempts 0
+! tui_valid_initial_attempts 21
+! tui_valid_initial_attempts invalid
 
 tui_dialog() {
   case "$*" in
     *--checklist*) printf '"github" "youtube" "cloudflare"\n' ;;
     *"Частота проверки"*) printf '5min\n' ;;
+    *"Попытки получения профиля"*) printf '10\n' ;;
     *"Источник генерации"*) printf 'official\n' ;;
     *--radiolist*) printf 'majority\n' ;;
     *) return 1 ;;
@@ -67,6 +74,8 @@ assert_equal 5min "${check_interval}"
 tui_select_generator_source
 assert_equal 'https://api.cloudflareclient.com/v0i1909051800' "${generator_api_url}"
 assert_equal '' "${generator_https_proxy}"
+tui_select_initial_attempts
+assert_equal 10 "${initial_generation_attempts}"
 
 if tui_calculate_quorum unsupported 3 >/dev/null 2>&1; then
   echo "unsupported quorum mode was accepted" >&2

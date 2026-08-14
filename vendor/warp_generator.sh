@@ -13,24 +13,43 @@ priv="${1:-$(wg genkey | tr -d '\n')}"
 pub="${2:-$(printf "%s" "${priv}" | wg pubkey | tr -d '\n')}"
 api="${WARP_API_BASE_URL:-https://api.cloudflareclient.com/v0i1909051800}"
 api=${api%/}
-ins() { curl -s -H 'User-Agent: okhttp/3.12.1' -H 'Content-Type: application/json' -X "$1" "${api}/$2" "${@:3}"; }
+generator_log() {
+  if [[ ${WARP_GENERATOR_VERBOSE:-0} == 1 ]]; then
+    printf '[generator] %s\n' "$*" >&2
+  fi
+}
+ins() { curl --fail-with-body --silent --show-error -H 'User-Agent: okhttp/3.12.1' -H 'Content-Type: application/json' -X "$1" "${api}/$2" "${@:3}"; }
 sec() { ins "$1" "$2" -H "Authorization: Bearer $3" "${@:4}"; }
-response=$(ins POST "reg" -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%TZ)\",\"key\":\"${pub}\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+generator_log "POST /reg: sending the public key to request a new registration..."
+if ! response=$(ins POST "reg" -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%TZ)\",\"key\":\"${pub}\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}"); then
+  generator_log "POST /reg failed."
+  exit 1
+fi
+generator_log "POST /reg: successful HTTP response received."
 
-clear
 id=$(echo "$response" | jq -r '.result.id')
 token=$(echo "$response" | jq -r '.result.token')
 # Если Cloudflare вернул ошибку
 if [ "$id" = "null" ] || [ -z "$id" ] || [ "$token" = "null" ] || [ -z "$token" ]; then
-  echo "[ERROR] Registration failed:"
-  echo "$response" | jq .
+  generator_log "Registration response is missing required fields."
   exit 1
 fi
-response=$(sec PATCH "reg/${id}" "$token" -d '{"warp_enabled":true}')
+generator_log "PATCH /reg/<id>: enabling WARP for the new registration..."
+if ! response=$(sec PATCH "reg/${id}" "$token" -d '{"warp_enabled":true}'); then
+  generator_log "PATCH /reg/<id> failed."
+  exit 1
+fi
 peer_pub=$(echo "$response" | jq -r '.result.config.peers[0].public_key')
 #peer_endpoint=$(echo "$response" | jq -r '.result.config.peers[0].endpoint.host')
 client_ipv4=$(echo "$response" | jq -r '.result.config.interface.addresses.v4')
 client_ipv6=$(echo "$response" | jq -r '.result.config.interface.addresses.v6')
+for required_value in "$peer_pub" "$client_ipv4" "$client_ipv6"; do
+  if [[ -z ${required_value} || ${required_value} == null ]]; then
+    generator_log "PATCH /reg/<id> response is missing peer parameters."
+    exit 1
+  fi
+done
+generator_log "PATCH /reg/<id>: peer configuration received and parsed."
 
 
 conf=$(cat <<-EOM

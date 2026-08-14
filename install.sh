@@ -8,6 +8,7 @@ config_path=""
 check_urls="https://github.com/ https://telegram.org/ https://www.cloudflare.com/cdn-cgi/trace"
 check_quorum=2
 check_interval="2min"
+initial_generation_attempts=10
 generator_api_url="https://api.cloudflareclient.com/v0i1909051800"
 generator_https_proxy=""
 skip_package_install=0
@@ -18,6 +19,7 @@ settings_option_set=0
 urls_option_set=0
 quorum_option_set=0
 interval_option_set=0
+initial_attempts_option_set=0
 endpoints_option_set=0
 generator_api_option_set=0
 generator_proxy_option_set=0
@@ -38,6 +40,7 @@ Options:
   --check-url URL        Replace defaults; repeat to add multiple URLs
   --quorum NUMBER        Required successful site checks (default: 2)
   --check-interval TIME  Timer interval: 30s, 1min, 2min, 1h (default: 2min)
+  --initial-attempts N   New-profile attempts: 1-20 (default: 10)
   --endpoint HOST:PORT   WARP endpoint; repeat to add rotation alternatives
   --generator-api URL    Compatible HTTPS WARP registration API base URL
   --generator-proxy URL  HTTP/HTTPS proxy used only for WARP registration
@@ -88,6 +91,13 @@ while (($#)); do
       check_interval=${2:?missing value for --check-interval}
       settings_option_set=1
       interval_option_set=1
+      configuration_args_seen=1
+      shift 2
+      ;;
+    --initial-attempts)
+      initial_generation_attempts=${2:?missing value for --initial-attempts}
+      settings_option_set=1
+      initial_attempts_option_set=1
       configuration_args_seen=1
       shift 2
       ;;
@@ -245,6 +255,14 @@ if [[ -s "${guardian_config}" ]]; then
       check_interval=${existing_check_interval}
     fi
   fi
+  if ((initial_attempts_option_set == 0)); then
+    existing_initial_attempts=$(sed -n 's/^INITIAL_GENERATION_ATTEMPTS=//p' "${guardian_config}" | head -n 1)
+    existing_initial_attempts=${existing_initial_attempts%\"}
+    existing_initial_attempts=${existing_initial_attempts#\"}
+    if [[ -n ${existing_initial_attempts} ]]; then
+      initial_generation_attempts=${existing_initial_attempts}
+    fi
+  fi
   if ((endpoints_option_set == 0 && identity_option_set == 0)); then
     existing_endpoints=$(sed -n 's/^WARP_ENDPOINTS=//p' "${guardian_config}" | head -n 1)
     existing_endpoints=${existing_endpoints%\"}
@@ -289,6 +307,11 @@ else
 fi
 if ((interval_seconds < 30)); then
   echo "--check-interval cannot be shorter than 30 seconds" >&2
+  exit 65
+fi
+if [[ ! ${initial_generation_attempts} =~ ^[1-9][0-9]*$ ]] || \
+  ((initial_generation_attempts > 20)); then
+  echo "--initial-attempts must be an integer between 1 and 20" >&2
   exit 65
 fi
 generator_api_url=${generator_api_url%/}
@@ -442,6 +465,7 @@ SERVICE=awg-quick@${interface}.service
 CHECK_URLS="${check_urls}"
 CHECK_QUORUM=${check_quorum}
 CHECK_INTERVAL=${check_interval}
+INITIAL_GENERATION_ATTEMPTS=${initial_generation_attempts}
 CURL_TIMEOUT=12
 BIND_TO_INTERFACE=1
 REQUIRE_WARP=1
@@ -487,20 +511,32 @@ systemctl daemon-reload
 
 generated_config=0
 initial_generation_attempt=1
-initial_generation_attempts=3
 if [[ ! -s "${config_path}" ]]; then
   install -d -m 700 "$(dirname -- "${config_path}")"
   initial_endpoint=${warp_endpoints%%,*}
   while ((initial_generation_attempt <= initial_generation_attempts)); do
-    echo "Generating Cloudflare WARP configuration (attempt ${initial_generation_attempt}/${initial_generation_attempts})..."
+    echo
+    echo "=== WARP configuration attempt ${initial_generation_attempt}/${initial_generation_attempts} ==="
+    echo "[installer] Registration API: ${generator_api_url}"
+    if [[ -n ${generator_https_proxy} ]]; then
+      echo "[installer] Registration transport: configured HTTP/HTTPS proxy"
+    else
+      echo "[installer] Registration transport: direct HTTPS connection"
+    fi
     if WARP_ENDPOINT="${initial_endpoint}" \
       WARP_API_BASE_URL="${generator_api_url}" \
       HTTPS_PROXY="${generator_https_proxy}" \
       https_proxy="${generator_https_proxy}" \
-      /usr/local/lib/awg-warp-guardian/generate-warp-config "${config_path}" && \
-      awg-quick strip "${config_path}" >/dev/null; then
-      generated_config=1
-      break
+      /usr/local/lib/awg-warp-guardian/generate-warp-config "${config_path}"; then
+      echo "[installer] Checking the received configuration with awg-quick..."
+      if awg-quick strip "${config_path}" >/dev/null; then
+        echo "[installer] Configuration syntax is valid."
+        generated_config=1
+        break
+      fi
+      echo "[installer] API returned parameters, but awg-quick rejected the configuration." >&2
+    else
+      echo "[installer] Registration/configuration generation failed on this attempt." >&2
     fi
     rm -f -- "${config_path}"
     initial_generation_attempt=$((initial_generation_attempt + 1))
@@ -531,14 +567,18 @@ if systemctl is-active --quiet "awg-quick@${interface}.service"; then
   tunnel_was_active=1
 fi
 systemctl enable --now "awg-quick@${interface}.service"
+echo "[installer] Tunnel service started; waiting 12 seconds for a handshake..."
 sleep 12
 installation_healthy=0
+echo "[installer] Checking the tunnel, selected sites, WARP status, and handshake..."
 if /usr/local/sbin/awg-warp-guardian check; then
   installation_healthy=1
 elif ((generated_config == 1)); then
   initial_generation_attempt=$((initial_generation_attempt + 1))
   while ((initial_generation_attempt <= initial_generation_attempts)); do
-    echo "Initial config failed health checks; reissuing it (attempt ${initial_generation_attempt}/${initial_generation_attempts})..." >&2
+    echo >&2
+    echo "=== WARP configuration attempt ${initial_generation_attempt}/${initial_generation_attempts} ===" >&2
+    echo "[installer] Previous configuration failed health checks; requesting a new registration." >&2
     systemctl stop "awg-quick@${interface}.service" || true
     if /usr/local/sbin/awg-warp-guardian rotate --force; then
       installation_healthy=1
@@ -549,6 +589,11 @@ elif ((generated_config == 1)); then
 fi
 
 if ((installation_healthy == 1)); then
+  if ((generated_config == 1)); then
+    # Forced retries during first-time setup must not consume the daily
+    # automatic-rotation budget after a working profile has been found.
+    rm -f -- /var/lib/awg-warp-guardian/state.json
+  fi
   systemctl enable awg-warp-guardian.timer >/dev/null
   systemctl restart awg-warp-guardian.timer
   echo

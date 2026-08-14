@@ -18,6 +18,10 @@ API_BASE_URL=${WARP_API_BASE_URL:-https://api.cloudflareclient.com/v0i1909051800
 API_BASE_URL=${API_BASE_URL%/}
 readonly API_BASE_URL
 
+generator_log() {
+  printf '[generator] %s\n' "$*" >&2
+}
+
 if [[ ! -x "${UPSTREAM_SCRIPT}" ]]; then
   echo "Bundled WARP generator is missing" >&2
   exit 69
@@ -53,19 +57,36 @@ cleanup() {
 }
 trap cleanup EXIT
 
-(
+generator_log "Ready configurations are not downloaded: the private key is created locally."
+generator_log "Registration API: ${API_BASE_URL}"
+if [[ -n ${HTTPS_PROXY:-${https_proxy:-}} ]]; then
+  generator_log "Transport: configured HTTP/HTTPS proxy (address hidden)."
+else
+  generator_log "Transport: direct HTTPS connection."
+fi
+generator_log "Creating a local key and requesting WARP registration parameters..."
+
+if ! (
   cd -- "${work_dir}"
   # The bundled MIT-licensed generator is sanitized and performs no package
   # management or secret-bearing terminal output.
+  WARP_GENERATOR_VERBOSE=1 \
   WARP_API_BASE_URL="${API_BASE_URL}" \
-    bash "${UPSTREAM_SCRIPT}" >/dev/null 2>&1
-)
-
-if [[ ! -s "${work_dir}/warp.conf" ]]; then
-  echo "WARP generator did not produce a config" >&2
+    bash "${UPSTREAM_SCRIPT}" >/dev/null
+); then
+  generator_log "Registration failed; no configuration was installed."
   exit 70
 fi
+
+if [[ ! -s "${work_dir}/warp.conf" ]]; then
+  generator_log "API exchange finished, but the generator did not produce a config."
+  exit 70
+fi
+
+generator_log "Registration accepted; peer parameters were received from the API."
 
 sed -E "s|^[[:space:]]*Endpoint[[:space:]]*=.*$|Endpoint = ${ENDPOINT}|" \
   "${work_dir}/warp.conf" >"${work_dir}/final.conf"
 install -D -m 600 "${work_dir}/final.conf" "${OUTPUT}"
+config_size=$(wc -c <"${OUTPUT}")
+generator_log "Configuration assembled locally and saved (${config_size} bytes; secrets hidden)."

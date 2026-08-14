@@ -393,6 +393,7 @@ class Guardian:
 
     def health(self) -> Health:
         errors: list[str] = []
+        LOG.info("Checking VPN health through interface %s", self.settings.interface)
         service_active = self.command_ok(
             [
                 self.settings.systemctl_command,
@@ -408,6 +409,11 @@ class Guardian:
         )
         if not interface_up:
             errors.append("tunnel interface is missing")
+        LOG.info(
+            "Service=%s, interface=%s",
+            "active" if service_active else "inactive",
+            "present" if interface_up else "missing",
+        )
 
         sites_ok = 0
         if interface_up:
@@ -419,10 +425,13 @@ class Guardian:
                     )
                     if probe.returncode == 0:
                         sites_ok += 1
+                        LOG.info("Site probe passed: %s", url)
                     else:
                         errors.append(f"site probe failed: {url}")
+                        LOG.warning("Site probe failed: %s", url)
                 except (OSError, subprocess.TimeoutExpired):
                     errors.append(f"site probe timed out: {url}")
+                    LOG.warning("Site probe timed out: %s", url)
         if sites_ok < self.settings.check_quorum:
             errors.append(
                 f"site quorum failed ({sites_ok}/{self.settings.check_quorum})"
@@ -442,6 +451,7 @@ class Guardian:
                 warp_on = False
             if not warp_on:
                 errors.append("Cloudflare trace does not report warp=on")
+            LOG.info("Cloudflare trace: warp=%s", "on" if warp_on else "off")
 
         handshake_age: int | None = None
         if interface_up:
@@ -468,6 +478,10 @@ class Guardian:
                 pass
         if handshake_age is None or handshake_age > self.settings.max_handshake_age:
             errors.append("recent AmneziaWG handshake was not observed")
+        if handshake_age is None:
+            LOG.warning("AmneziaWG handshake: not observed")
+        else:
+            LOG.info("AmneziaWG handshake age: %ss", handshake_age)
 
         healthy = (
             service_active
@@ -591,11 +605,23 @@ class Guardian:
             environment["HTTPS_PROXY"] = self.settings.generator_https_proxy
             environment["https_proxy"] = self.settings.generator_https_proxy
         try:
+            LOG.info("Registration API: %s", self.settings.generator_api_url)
+            LOG.info(
+                "Registration transport: %s",
+                "configured HTTP/HTTPS proxy"
+                if self.settings.generator_https_proxy
+                else "direct HTTPS connection",
+            )
+            LOG.info("Candidate endpoint: %s", endpoint)
             generated = self.runner.run(
                 [str(self.settings.generator_path), str(candidate)],
                 timeout=self.settings.generator_timeout,
                 env=environment,
             )
+            for line in generated.stderr.splitlines():
+                line = line.strip()
+                if line.startswith("[generator] "):
+                    LOG.info("%s", line)
             if generated.returncode != 0:
                 raise RuntimeError("WARP config generator failed")
             if self.settings.config_path.exists():
