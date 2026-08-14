@@ -24,14 +24,22 @@ rm -rf -- /usr/local/lib/awg-warp-guardian
 systemctl daemon-reload
 
 lan_helper_in_use=0
+endpoint_helper_in_use=0
 for config_dir in /etc/amnezia/amneziawg /etc/amneziawg; do
   if [[ -d ${config_dir} ]] && \
     grep -RqsF '/usr/local/sbin/awg-warp-lan-rules' "${config_dir}"; then
     lan_helper_in_use=1
   fi
+  if [[ -d ${config_dir} ]] && \
+    grep -RqsF '/usr/local/sbin/awg-warp-route-endpoint' "${config_dir}"; then
+    endpoint_helper_in_use=1
+  fi
 done
 if ((lan_helper_in_use == 0)); then
   rm -f -- /usr/local/sbin/awg-warp-lan-rules
+fi
+if ((endpoint_helper_in_use == 0)); then
+  rm -f -- /usr/local/sbin/awg-warp-route-endpoint
 fi
 
 if ((purge == 1)); then
@@ -42,4 +50,7 @@ echo "AWG WARP Guardian was removed."
 echo "The AmneziaWG package, tunnel service, and VPN .conf file were left intact."
 if ((lan_helper_in_use == 1)); then
   echo "The LAN route helper was retained because an existing VPN profile uses it."
+fi
+if ((endpoint_helper_in_use == 1)); then
+  echo "The endpoint route helper was retained because an existing VPN profile uses it."
 fi

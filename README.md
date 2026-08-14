@@ -187,20 +187,23 @@ journalctl -u awg-warp-guardian.service -n 100 --no-pager
 
 ## Защита SSH и маршрутов
 
-По умолчанию TUI включает «Исключить LAN». IPv4 при этом остаётся full-tunnel,
-чтобы механизм `fwmark` от `wg-quick` гарантированно сохранял прямой маршрут к
-WARP endpoint. Перед правилами VPN добавляются policy rules с приоритетами
-`10000–10004`, которые направляют `10/8`, `100.64/10`, `169.254/16`,
-`172.16/12` и `192.168/16` в обычную таблицу `main`. Поэтому доступ сохраняется
-не только из непосредственно подключённой `/24`, но и из другой частной сети
-за локальным маршрутизатором. Для IPv6 через WARP направляется только глобальный
-диапазон `2000::/3`; ULA и link-local остаются вне туннеля.
+По умолчанию TUI включает «Исключить LAN». В этом режиме `AllowedIPs` повторяет
+проверенную схему `warp-gen`: содержит внешние IPv4-диапазоны, но не содержит
+маршрута по умолчанию, RFC1918 (`10/8`, `172.16/12`, `192.168/16`), loopback,
+link-local и IPv6. Поэтому `wg-quick` не создаёт отдельную default-таблицу
+`51820`, а ответы SSH в другую частную сеть продолжают идти через обычный
+маршрут сервера.
+
+Поскольку публичный IPv4 endpoint WARP входит в разрешённые внешние диапазоны,
+для него перед запуском создаётся более точный `/32`-маршрут через физический
+gateway из таблицы `main`. Это не позволяет UDP-соединению WARP зациклиться в
+собственный туннель.
 
 Правила устанавливаются и удаляются хуками профиля:
 
 ```ini
-PreUp = /usr/local/sbin/awg-warp-lan-rules up
-PostDown = /usr/local/sbin/awg-warp-lan-rules down
+PreUp = /usr/local/sbin/awg-warp-route-endpoint up 162.159.192.1
+PostDown = /usr/local/sbin/awg-warp-route-endpoint down 162.159.192.1
 ```
 
 Это снижает риск потерять SSH и доступ к локальным сервисам при запуске
@@ -320,19 +323,20 @@ sudo ./uninstall.sh
 
 `sudo ./uninstall.sh --purge` дополнительно удалит настройки guardian, его
 состояние и резервные копии, но также оставит сам `.conf` туннеля.
-Если профиль использует хук защиты LAN, маленький
-`/usr/local/sbin/awg-warp-lan-rules` также остаётся на месте, чтобы последующий
-запуск или остановка VPN не сломались.
+Если профиль использует хук защиты маршрута, соответствующий маленький helper в
+`/usr/local/sbin` также остаётся на месте, чтобы последующий запуск или
+остановка VPN не сломались.
 
 ## Разработка
 
 ```bash
-bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh src/lan-rules src/route-policy.sh tests/test_generator_wrapper.sh tests/test_lan_rules.sh
+bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh src/lan-rules src/route-endpoint src/route-policy.sh tests/test_generator_wrapper.sh tests/test_lan_rules.sh tests/test_route_endpoint.sh
 python3 -m compileall -q src tests
 python3 -m unittest discover -s tests -v
 bash tests/test_tui_helpers.sh
 bash tests/test_generator_wrapper.sh
 bash tests/test_lan_rules.sh
+bash tests/test_route_endpoint.sh
 ```
 
 Основной проект распространяется по MIT. Для локальной перевыдачи ключей

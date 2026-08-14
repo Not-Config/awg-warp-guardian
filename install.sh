@@ -191,6 +191,7 @@ for required in \
   "${PROJECT_DIR}/src/generate-warp-config" \
   "${PROJECT_DIR}/src/install-tui.sh" \
   "${PROJECT_DIR}/src/lan-rules" \
+  "${PROJECT_DIR}/src/route-endpoint" \
   "${PROJECT_DIR}/src/route-policy.sh" \
   "${PROJECT_DIR}/vendor/warp_generator.sh" \
   "${PROJECT_DIR}/vendor/LICENSE.ImMALWARE"; do
@@ -485,6 +486,8 @@ install -D -m 755 "${PROJECT_DIR}/src/generate-warp-config" \
   /usr/local/lib/awg-warp-guardian/generate-warp-config
 install -D -m 755 "${PROJECT_DIR}/src/lan-rules" \
   /usr/local/sbin/awg-warp-lan-rules
+install -D -m 755 "${PROJECT_DIR}/src/route-endpoint" \
+  /usr/local/sbin/awg-warp-route-endpoint
 install -D -m 644 "${PROJECT_DIR}/src/route-policy.sh" \
   /usr/local/lib/awg-warp-guardian/route-policy.sh
 install -D -m 755 "${PROJECT_DIR}/vendor/warp_generator.sh" \

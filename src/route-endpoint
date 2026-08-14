@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly IP_COMMAND=${IP_COMMAND:-ip}
+readonly GETENT_COMMAND=${GETENT_COMMAND:-getent}
+readonly ROUTE_PROTOCOL=186
+
+if [[ $# -ne 2 || ($1 != up && $1 != down) ]]; then
+  echo "Usage: route-endpoint up|down HOST" >&2
+  exit 64
+fi
+readonly ACTION=$1
+readonly ENDPOINT_HOST=$2
+
+if [[ ! ${ENDPOINT_HOST} =~ ^[A-Za-z0-9.-]+$ ]]; then
+  echo "Endpoint host must be an IPv4 address or DNS name" >&2
+  exit 65
+fi
+
+endpoint_ip=${ENDPOINT_HOST}
+if [[ ! ${endpoint_ip} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  endpoint_ip=$("${GETENT_COMMAND}" ahostsv4 "${ENDPOINT_HOST}" | \
+    awk 'NR == 1 { print $1 }')
+fi
+if [[ ! ${endpoint_ip} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  echo "Could not resolve an IPv4 address for ${ENDPOINT_HOST}" >&2
+  exit 69
+fi
+
+if [[ ${ACTION} == down ]]; then
+  "${IP_COMMAND}" -4 route del "${endpoint_ip}/32" table main \
+    proto "${ROUTE_PROTOCOL}" 2>/dev/null || true
+  exit 0
+fi
+
+route=$("${IP_COMMAND}" -4 route get "${endpoint_ip}")
+device=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }' \
+  <<<"${route}")
+gateway=$(awk '{ for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit } }' \
+  <<<"${route}")
+if [[ -z ${device} ]]; then
+  echo "Could not determine the physical route to ${endpoint_ip}" >&2
+  exit 69
+fi
+
+route_args=(-4 route replace "${endpoint_ip}/32")
+if [[ -n ${gateway} ]]; then
+  route_args+=(via "${gateway}")
+fi
+route_args+=(dev "${device}" table main proto "${ROUTE_PROTOCOL}")
+"${IP_COMMAND}" "${route_args[@]}"

@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check shell syntax
-        run: bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh src/lan-rules src/route-policy.sh tests/test_generator_wrapper.sh tests/test_tui_helpers.sh tests/test_lan_rules.sh
+        run: bash -n bootstrap.sh install.sh uninstall.sh src/generate-warp-config src/install-tui.sh src/lan-rules src/route-endpoint src/route-policy.sh tests/test_generator_wrapper.sh tests/test_tui_helpers.sh tests/test_lan_rules.sh tests/test_route_endpoint.sh
       - name: Check Python syntax
         run: python3 -m compileall -q src tests
       - name: Run unit tests
@@ -24,3 +24,5 @@ jobs:
         run: bash tests/test_generator_wrapper.sh
       - name: Run LAN rule tests
         run: bash tests/test_lan_rules.sh
+      - name: Run endpoint route tests
+        run: bash tests/test_route_endpoint.sh

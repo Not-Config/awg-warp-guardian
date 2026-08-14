@@ -64,13 +64,14 @@ if grep -Fq 'LOCAL_TEST_SECRET' "${TEST_DIR}/progress.log"; then
   exit 1
 fi
 grep -Fq 'PrivateKey = LOCAL_TEST_SECRET' "${TEST_DIR}/generated.conf"
-grep -Fq 'AllowedIPs = 0.0.0.0/0, 2000::/3' "${TEST_DIR}/generated.conf"
-grep -Fq 'PreUp = /usr/local/sbin/awg-warp-lan-rules up' \
+grep -Fq 'AllowedIPs = 1.0.0.0/8, 2.0.0.0/7' "${TEST_DIR}/generated.conf"
+grep -Fq 'PreUp = /usr/local/sbin/awg-warp-route-endpoint up 162.159.192.1' \
   "${TEST_DIR}/generated.conf"
-grep -Fq 'PostDown = /usr/local/sbin/awg-warp-lan-rules down' \
+grep -Fq 'PostDown = /usr/local/sbin/awg-warp-route-endpoint down 162.159.192.1' \
   "${TEST_DIR}/generated.conf"
-if grep -Fq 'AllowedIPs = 0.0.0.0/0, ::/0' "${TEST_DIR}/generated.conf"; then
-  echo "LAN-excluded config still contains a full IPv6 tunnel" >&2
+if grep -Eq 'AllowedIPs.*(0\.0\.0\.0/0|::/0|10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)' \
+  "${TEST_DIR}/generated.conf"; then
+  echo "LAN-excluded config contains a default or private route" >&2
   exit 1
 fi
 
@@ -78,10 +79,18 @@ fi
 source "${PROJECT_DIR}/src/route-policy.sh"
 awg_apply_route_policy \
   "${TEST_DIR}/generated.conf" "${TEST_DIR}/reapplied.conf" 1
-asserted_hooks=$(grep -Fc '/awg-warp-lan-rules' \
+asserted_hooks=$(grep -Fc '/awg-warp-route-endpoint' \
   "${TEST_DIR}/reapplied.conf")
 if [[ ${asserted_hooks} -ne 2 ]]; then
   echo "LAN policy reapplication duplicated or removed managed hooks" >&2
+  exit 1
+fi
+awg_apply_route_policy \
+  "${TEST_DIR}/generated.conf" "${TEST_DIR}/included-lan.conf" 0
+grep -Fq 'AllowedIPs = 0.0.0.0/0, ::/0' "${TEST_DIR}/included-lan.conf"
+if grep -Eq '/awg-warp-(lan-rules|route-endpoint)' \
+  "${TEST_DIR}/included-lan.conf"; then
+  echo "including LAN did not remove managed route hooks" >&2
   exit 1
 fi
 
@@ -91,8 +100,9 @@ WARP_API_BASE_URL=https://mirror.example/v0i1909051800 \
   "${TEST_DIR}/full-tunnel.conf" \
   >/dev/null 2>"${TEST_DIR}/full-tunnel-progress.log"
 grep -Fq 'AllowedIPs = 0.0.0.0/0, ::/0' "${TEST_DIR}/full-tunnel.conf"
-if grep -Fq '/awg-warp-lan-rules' "${TEST_DIR}/full-tunnel.conf"; then
-  echo "full-tunnel config unexpectedly contains LAN policy hooks" >&2
+if grep -Eq '/awg-warp-(lan-rules|route-endpoint)' \
+  "${TEST_DIR}/full-tunnel.conf"; then
+  echo "full-tunnel config unexpectedly contains route-policy hooks" >&2
   exit 1
 fi
 grep -Fq '[generator] LAN exclusion: disabled' \
