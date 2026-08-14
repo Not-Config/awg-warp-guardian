@@ -7,11 +7,16 @@ interface="awg-warp"
 config_path=""
 check_urls="https://github.com/ https://telegram.org/ https://www.cloudflare.com/cdn-cgi/trace"
 check_quorum=2
+check_interval="2min"
 skip_package_install=0
 no_start=0
 reconfigure=0
 identity_option_set=0
 settings_option_set=0
+urls_option_set=0
+quorum_option_set=0
+interval_option_set=0
+endpoints_option_set=0
 custom_endpoints=()
 tui_mode=auto
 configuration_args_seen=0
@@ -28,6 +33,7 @@ Options:
   --config PATH          Existing or new awg-quick configuration path
   --check-url URL        Replace defaults; repeat to add multiple URLs
   --quorum NUMBER        Required successful site checks (default: 2)
+  --check-interval TIME  Timer interval: 30s, 1min, 2min, 1h (default: 2min)
   --endpoint HOST:PORT   WARP endpoint; repeat to add rotation alternatives
   --tui                  Force the interactive installer
   --no-tui               Disable the interactive installer
@@ -60,18 +66,28 @@ while (($#)); do
     --check-url)
       custom_urls+=("${2:?missing value for --check-url}")
       settings_option_set=1
+      urls_option_set=1
       configuration_args_seen=1
       shift 2
       ;;
     --quorum)
       check_quorum=${2:?missing value for --quorum}
       settings_option_set=1
+      quorum_option_set=1
+      configuration_args_seen=1
+      shift 2
+      ;;
+    --check-interval)
+      check_interval=${2:?missing value for --check-interval}
+      settings_option_set=1
+      interval_option_set=1
       configuration_args_seen=1
       shift 2
       ;;
     --endpoint)
       custom_endpoints+=("${2:?missing value for --endpoint}")
       settings_option_set=1
+      endpoints_option_set=1
       configuration_args_seen=1
       shift 2
       ;;
@@ -177,6 +193,38 @@ if [[ -s "${guardian_config}" ]]; then
     config_path=${existing_config_path%\"}
     config_path=${config_path#\"}
   fi
+  if ((urls_option_set == 0)); then
+    existing_check_urls=$(sed -n 's/^CHECK_URLS=//p' "${guardian_config}" | head -n 1)
+    existing_check_urls=${existing_check_urls%\"}
+    existing_check_urls=${existing_check_urls#\"}
+    if [[ -n ${existing_check_urls} ]]; then
+      check_urls=${existing_check_urls}
+    fi
+  fi
+  if ((quorum_option_set == 0)); then
+    existing_check_quorum=$(sed -n 's/^CHECK_QUORUM=//p' "${guardian_config}" | head -n 1)
+    existing_check_quorum=${existing_check_quorum%\"}
+    existing_check_quorum=${existing_check_quorum#\"}
+    if [[ -n ${existing_check_quorum} ]]; then
+      check_quorum=${existing_check_quorum}
+    fi
+  fi
+  if ((interval_option_set == 0)); then
+    existing_check_interval=$(sed -n 's/^CHECK_INTERVAL=//p' "${guardian_config}" | head -n 1)
+    existing_check_interval=${existing_check_interval%\"}
+    existing_check_interval=${existing_check_interval#\"}
+    if [[ -n ${existing_check_interval} ]]; then
+      check_interval=${existing_check_interval}
+    fi
+  fi
+  if ((endpoints_option_set == 0 && identity_option_set == 0)); then
+    existing_endpoints=$(sed -n 's/^WARP_ENDPOINTS=//p' "${guardian_config}" | head -n 1)
+    existing_endpoints=${existing_endpoints%\"}
+    existing_endpoints=${existing_endpoints#\"}
+    if [[ -n ${existing_endpoints} ]]; then
+      IFS=, read -r -a custom_endpoints <<<"${existing_endpoints}"
+    fi
+  fi
 fi
 if [[ ! "${interface}" =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]]; then
   echo "Invalid Linux interface name: ${interface}" >&2
@@ -184,6 +232,21 @@ if [[ ! "${interface}" =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]]; then
 fi
 if [[ ! "${check_quorum}" =~ ^[1-9][0-9]*$ ]]; then
   echo "--quorum must be a positive integer" >&2
+  exit 65
+fi
+if [[ ${check_interval} =~ ^([1-9][0-9]*)(s|min|h)$ ]]; then
+  interval_amount=$((10#${BASH_REMATCH[1]}))
+  case "${BASH_REMATCH[2]}" in
+    s) interval_seconds=${interval_amount} ;;
+    min) interval_seconds=$((interval_amount * 60)) ;;
+    h) interval_seconds=$((interval_amount * 3600)) ;;
+  esac
+else
+  echo "--check-interval must use the format 30s, 2min, or 1h" >&2
+  exit 65
+fi
+if ((interval_seconds < 30)); then
+  echo "--check-interval cannot be shorter than 30 seconds" >&2
   exit 65
 fi
 if ((${#custom_urls[@]})); then
@@ -305,6 +368,7 @@ CONFIG_PATH=${config_path}
 SERVICE=awg-quick@${interface}.service
 CHECK_URLS="${check_urls}"
 CHECK_QUORUM=${check_quorum}
+CHECK_INTERVAL=${check_interval}
 CURL_TIMEOUT=12
 BIND_TO_INTERFACE=1
 REQUIRE_WARP=1
@@ -333,6 +397,18 @@ install -D -m 644 "${PROJECT_DIR}/systemd/awg-warp-guardian.service" \
   /etc/systemd/system/awg-warp-guardian.service
 install -D -m 644 "${PROJECT_DIR}/systemd/awg-warp-guardian.timer" \
   /etc/systemd/system/awg-warp-guardian.timer
+install -d -m 755 /etc/systemd/system/awg-warp-guardian.timer.d
+timer_dropin_tmp=$(mktemp /etc/systemd/system/awg-warp-guardian.timer.d/.10-interval.conf.XXXXXX)
+cat >"${timer_dropin_tmp}" <<EOF
+[Timer]
+OnBootSec=
+OnBootSec=${check_interval}
+OnUnitActiveSec=
+OnUnitActiveSec=${check_interval}
+EOF
+chmod 644 "${timer_dropin_tmp}"
+mv -f -- "${timer_dropin_tmp}" \
+  /etc/systemd/system/awg-warp-guardian.timer.d/10-interval.conf
 systemctl daemon-reload
 
 generated_config=0
@@ -367,9 +443,11 @@ fi
 systemctl enable --now "awg-quick@${interface}.service"
 sleep 12
 if /usr/local/sbin/awg-warp-guardian check; then
-  systemctl enable --now awg-warp-guardian.timer
+  systemctl enable awg-warp-guardian.timer >/dev/null
+  systemctl restart awg-warp-guardian.timer
   echo
   echo "AWG WARP Guardian is installed and the tunnel is healthy."
+  echo "Check interval: ${check_interval}"
   echo "Status: awg-warp-guardian status"
   echo "Logs:   journalctl -u awg-warp-guardian.service -f"
   exit 0

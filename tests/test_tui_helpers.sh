@@ -30,10 +30,17 @@ tui_valid_endpoint '[2606:4700:d0::a29f:c001]:2408'
 tui_valid_url 'https://example.org/health?source=tui&ok=1'
 ! tui_valid_url 'ftp://example.org/'
 ! tui_valid_url 'https://example.org/bad path'
+assert_equal 30 "$(tui_interval_seconds 30s)"
+assert_equal 120 "$(tui_interval_seconds 2min)"
+assert_equal 3600 "$(tui_interval_seconds 1h)"
+tui_valid_interval 30s
+! tui_valid_interval 29s
+! tui_valid_interval '2 minutes'
 
 tui_dialog() {
   case "$*" in
     *--checklist*) printf '"github" "youtube" "cloudflare"\n' ;;
+    *"Частота проверки"*) printf '5min\n' ;;
     *--radiolist*) printf 'majority\n' ;;
     *) return 1 ;;
   esac
@@ -47,6 +54,8 @@ assert_equal 'https://www.youtube.com/generate_204' "${custom_urls[1]}"
 assert_equal 'https://www.cloudflare.com/cdn-cgi/trace' "${custom_urls[2]}"
 tui_select_quorum
 assert_equal 2 "${check_quorum}"
+tui_select_interval
+assert_equal 5min "${check_interval}"
 
 if tui_calculate_quorum unsupported 3 >/dev/null 2>&1; then
   echo "unsupported quorum mode was accepted" >&2

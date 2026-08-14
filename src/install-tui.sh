@@ -44,6 +44,27 @@ tui_valid_url() {
   [[ $1 =~ ^https?://[A-Za-z0-9:/?\&._=%+#@~-]+$ ]]
 }
 
+tui_interval_seconds() {
+  local interval=$1
+  local amount unit
+
+  [[ ${interval} =~ ^([1-9][0-9]*)(s|min|h)$ ]] || return 1
+  amount=$((10#${BASH_REMATCH[1]}))
+  unit=${BASH_REMATCH[2]}
+  case "${unit}" in
+    s) printf '%s\n' "${amount}" ;;
+    min) printf '%s\n' "$((amount * 60))" ;;
+    h) printf '%s\n' "$((amount * 3600))" ;;
+  esac
+}
+
+tui_valid_interval() {
+  local seconds
+
+  seconds=$(tui_interval_seconds "$1") || return 1
+  ((seconds >= 30))
+}
+
 tui_add_unique_path() {
   local candidate=$1
   local existing
@@ -197,6 +218,10 @@ tui_select_profile() {
 
   identity_option_set=1
   settings_option_set=1
+  urls_option_set=1
+  quorum_option_set=1
+  interval_option_set=1
+  endpoints_option_set=1
   reconfigure=1
   return 1
 }
@@ -276,6 +301,41 @@ tui_select_quorum() {
   check_quorum=$(tui_calculate_quorum "${quorum_mode}" "${#custom_urls[@]}")
 }
 
+tui_select_interval() {
+  local interval_choice custom_interval
+
+  if ! interval_choice=$(tui_dialog --title "Частота проверки" \
+    --radiolist "Как часто проверять VPN и выбранные сайты?" \
+    21 82 8 \
+    30s "Каждые 30 секунд" OFF \
+    1min "Каждую минуту" OFF \
+    2min "Каждые 2 минуты (рекомендуется)" ON \
+    5min "Каждые 5 минут" OFF \
+    10min "Каждые 10 минут" OFF \
+    30min "Каждые 30 минут" OFF \
+    1h "Каждый час" OFF \
+    custom "Указать свой интервал" OFF); then
+    return 130
+  fi
+
+  if [[ ${interval_choice} == custom ]]; then
+    while true; do
+      if ! custom_interval=$(tui_dialog --title "Свой интервал" \
+        --inputbox "Формат: 30s, 2min или 1h. Минимум — 30s:" \
+        11 76 "2min"); then
+        return 130
+      fi
+      if tui_valid_interval "${custom_interval}"; then
+        interval_choice=${custom_interval}
+        break
+      fi
+      tui_dialog --title "Некорректный интервал" \
+        --msgbox "Используйте целое число и единицу s, min или h. Интервал должен быть не короче 30 секунд." 10 82
+    done
+  fi
+  check_interval=${interval_choice}
+}
+
 tui_confirm_install() {
   local endpoint_summary site_lines summary url
 
@@ -289,13 +349,14 @@ tui_confirm_install() {
     site_lines+="\n • ${url}"
   done
   summary=$(printf \
-    'Интерфейс: %s\nПрофиль: %s\nEndpoint: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
+    'Интерфейс: %s\nПрофиль: %s\nEndpoint: %s\nЧастота проверки: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
     "${interface}" "${config_path:-будет создан автоматически}" \
-    "${endpoint_summary}" "${site_lines}" "${check_quorum}" "${#custom_urls[@]}")
+    "${endpoint_summary}" "${check_interval}" "${site_lines}" \
+    "${check_quorum}" "${#custom_urls[@]}")
 
   if tui_dialog --title "Подтверждение установки" \
     --yes-button "Установить" --no-button "Назад" \
-    --yesno "${summary}" 24 94; then
+    --yesno "${summary}" 25 94; then
     return 0
   fi
   return 2
@@ -320,6 +381,7 @@ tui_install_once() {
     [[ ${result} -eq 3 ]] || return "${result}"
   done
   tui_select_quorum || return $?
+  tui_select_interval || return $?
   tui_confirm_install
 }
 

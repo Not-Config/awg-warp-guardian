@@ -17,7 +17,9 @@ systemctl disable --now awg-warp-guardian.timer >/dev/null 2>&1 || true
 rm -f -- \
   /etc/systemd/system/awg-warp-guardian.service \
   /etc/systemd/system/awg-warp-guardian.timer \
+  /etc/systemd/system/awg-warp-guardian.timer.d/10-interval.conf \
   /usr/local/sbin/awg-warp-guardian
+rmdir /etc/systemd/system/awg-warp-guardian.timer.d 2>/dev/null || true
 rm -rf -- /usr/local/lib/awg-warp-guardian
 systemctl daemon-reload
 
