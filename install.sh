@@ -49,9 +49,9 @@ Options:
   --reconfigure          Replace the existing guardian.env
   -h, --help             Show this help
 
-For the existing tg-bt profile:
-  sudo ./install.sh --interface awg-new \
-    --config /etc/amnezia/amneziawg/awg-new.conf
+For an existing profile:
+  sudo ./install.sh --interface awg-existing \
+    --config /etc/amnezia/amneziawg/awg-existing.conf
 EOF
 }
 

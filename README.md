@@ -95,16 +95,16 @@ sudo ./install.sh
 sudo ./install.sh --no-tui --interface awg-warp
 ```
 
-## Быстрый запуск на существующем `tg-bt`
+## Подключение существующего профиля
 
-На сервере уже используется профиль `awg-new`, поэтому команда будет такой:
+Если на сервере уже есть рабочий профиль AmneziaWG, укажите его имя и путь:
 
 ```bash
 git clone https://github.com/Not-Config/awg-warp-guardian.git
 cd awg-warp-guardian
 sudo ./install.sh \
-  --interface awg-new \
-  --config /etc/amnezia/amneziawg/awg-new.conf
+  --interface awg-existing \
+  --config /etc/amnezia/amneziawg/awg-existing.conf
 ```
 
 Установщик не перезаписывает существующий профиль при первой установке. Он
@@ -128,8 +128,8 @@ sudo ./install.sh --interface awg-warp
 
 ```bash
 sudo ./install.sh \
-  --interface awg-new \
-  --config /etc/amnezia/amneziawg/awg-new.conf \
+  --interface awg-existing \
+  --config /etc/amnezia/amneziawg/awg-existing.conf \
   --no-start
 ```
 
@@ -143,7 +143,7 @@ CHECK_QUORUM=2
 CHECK_INTERVAL=2min
 ```
 
-Запросы выполняются с `curl --interface awg-new`, поэтому доступ напрямую не
+Запросы выполняются с `curl --interface awg-existing`, поэтому доступ напрямую не
 маскирует упавший VPN. Отдельная проверка Cloudflare Trace требует
 `warp=on`. После изменения адресов или порога не нужно перезапускать timer:
 следующий запуск прочитает файл заново.
@@ -190,8 +190,7 @@ ALLOW_HARD_RESTART=0
 ## Endpoint-ы и ротация
 
 Для нового профиля по умолчанию используется стандартный WARP endpoint. При
-подключении существующего профиля установщик сохраняет его текущий endpoint —
-например, `nl.tribukvy.ltd`, если профиль был создан на указанном тобой сайте:
+подключении существующего профиля установщик сохраняет его текущий endpoint:
 
 ```ini
 WARP_ENDPOINTS=162.159.192.1:500
@@ -206,10 +205,9 @@ MAX_ROTATIONS_PER_DAY=4
 При установке список можно задать сразу:
 
 ```bash
-sudo ./install.sh --interface awg-new \
-  --config /etc/amnezia/amneziawg/awg-new.conf \
-  --endpoint nl.tribukvy.ltd:500 \
-  --endpoint nl.tribukvy.ltd:2408 \
+sudo ./install.sh --interface awg-existing \
+  --config /etc/amnezia/amneziawg/awg-existing.conf \
+  --endpoint 162.159.192.1:500 \
   --reconfigure
 ```
 
