@@ -5,6 +5,11 @@ PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck disable=SC1091
 source "${PROJECT_DIR}/src/install-tui.sh"
 
+if ! declare -f tui_dialog | grep -q 'TERM=linux whiptail'; then
+  echo "TUI must use normal cursor-key sequences for SSH compatibility" >&2
+  exit 1
+fi
+
 assert_equal() {
   local expected=$1
   local actual=$2

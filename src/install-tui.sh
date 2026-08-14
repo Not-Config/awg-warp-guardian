@@ -8,9 +8,16 @@ tui_dialog() {
   # terminal. Only the selected value goes to stdout. Mixing those streams is
   # what makes SSH arrow-key sequences such as ^[[B appear inside a menu row.
   if (: </dev/tty) 2>/dev/null && (: >/dev/tty) 2>/dev/null; then
-    whiptail --output-fd 3 "$@" 3>&1 </dev/tty >/dev/tty 2>/dev/tty
+    # Windows Terminal/OpenSSH can keep sending normal cursor sequences
+    # (ESC [ A/B) even when xterm terminfo asks for application sequences
+    # (ESC O A/B). linux terminfo deliberately uses the normal form. Reset
+    # cursor-key mode before every screen so both Windows and Linux SSH
+    # clients agree with whiptail about the received bytes.
+    printf '\033[?1l\033>' >/dev/tty
+    TERM=linux whiptail --output-fd 3 "$@" \
+      3>&1 </dev/tty >/dev/tty 2>/dev/tty
   else
-    whiptail "$@" 3>&1 1>&2 2>&3
+    TERM=linux whiptail "$@" 3>&1 1>&2 2>&3
   fi
 }
 
