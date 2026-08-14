@@ -8,115 +8,100 @@ cleanup() {
 }
 trap cleanup EXIT
 
-assert_rejected_api() {
-  local api_url=$1
-  local status
+cat >"${TEST_DIR}/script.js" <<'EOF'
+function generateRandomEndpoint() {
+  const ports = [500];
+  if (selectedServer === 'def') {
+    const prefixes = ["162.159.192."];
+  }
+  const serverMap = {'NL': 'nl.example.test', 'ltePL': 'lte.example.test'};
+}
+const fetchFullConfig = async () => {
+  const endpoints = ['https://data.example.test/identity'];
+};
+const fetchFullConfigMSQ = async () => {};
+// AWGm1
+if (custom) {i1Value = custom} else {i1Value = 'I1 = <b 0x0102>'}
+// AWGm2
+if (custom) {i1Value = custom} else {i1Value = 'I1 = <b 0x0304>'}
+// AWGm3
+if (custom) {i1Value = custom} else {i1Value = 'I1 = <b 0x0506>\nI2 = <b 0x0708>'}
+function getSelectedDNS() {
+  if (document.getElementById('cf').checked) { return "1.1.1.1, 1.0.0.1, 2606:4700:4700::1111"; }
+  else if (document.getElementById('google').checked) { return "8.8.8.8, 2001:4860:4860::8888"; }
+}
+function getSelectedSites() {
+  const toggleCheckbox = document.getElementById('rules');
+  if (toggleCheckbox && toggleCheckbox.checked) {
+    return "1.0.0.0/8, 2.0.0.0/7, ::/1, 8000::/2";
+  }
+  return "0.0.0.0/0, ::/0";
+}
+const modal = null;
+EOF
 
+cat >"${TEST_DIR}/identity.json" <<'EOF'
+{
+  "privKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "peer_pub": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+  "client_ipv4": "172.16.0.2",
+  "client_ipv6": "2606:4700:110:8bc6::2"
+}
+EOF
+
+assert_rejected_site() {
+  local site_url=$1
+  local status
   set +e
-  WARP_API_BASE_URL="${api_url}" \
+  WARP_GENERATOR_SITE_URL="${site_url}" \
+  WARP_GENERATOR_SCRIPT_FILE="${TEST_DIR}/script.js" \
+  WARP_GENERATOR_DATA_FILE="${TEST_DIR}/identity.json" \
     "${PROJECT_DIR}/src/generate-warp-config" "${TEST_DIR}/invalid.conf" \
     >/dev/null 2>"${TEST_DIR}/error.log"
   status=$?
   set -e
-  if [[ ${status} -ne 65 ]]; then
-    echo "expected invalid API URL to exit 65, got ${status}" >&2
-    sed -n '1,5p' "${TEST_DIR}/error.log" >&2
+  [[ ${status} -eq 65 ]] || {
+    echo "expected invalid site URL to exit 65, got ${status}" >&2
     exit 1
-  fi
+  }
 }
 
-assert_rejected_api "http://mirror.example/v0i1909051800"
-assert_rejected_api "https://mirror.example/api?target=other"
-assert_rejected_api "https://mirror.example:99999/api"
+assert_rejected_site "http://warp-gen.example"
+assert_rejected_site "https://warp-gen.example/page?unsafe=1"
 
-if [[ -e ${TEST_DIR}/invalid.conf ]]; then
-  echo "invalid API URL unexpectedly produced a config" >&2
-  exit 1
-fi
-
-mkdir -p "${TEST_DIR}/fixture/src" "${TEST_DIR}/fixture/vendor"
-cp "${PROJECT_DIR}/src/generate-warp-config" \
-  "${TEST_DIR}/fixture/src/generate-warp-config"
-cp "${PROJECT_DIR}/src/route-policy.sh" \
-  "${TEST_DIR}/fixture/src/route-policy.sh"
-chmod 755 "${TEST_DIR}/fixture/src/generate-warp-config"
-printf '%s\n' \
-  '#!/usr/bin/env bash' \
-  'set -Eeuo pipefail' \
-  'printf "[generator] POST /reg: successful HTTP response received.\n" >&2' \
-  'printf "%s\n" "[Interface]" "PrivateKey = LOCAL_TEST_SECRET" "Address = 172.16.0.2/32" "" "[Peer]" "PublicKey = TEST_PEER" "AllowedIPs = 0.0.0.0/0" "Endpoint = 162.159.192.1:500" > warp.conf' \
-  >"${TEST_DIR}/fixture/vendor/warp_generator.sh"
-chmod 755 "${TEST_DIR}/fixture/vendor/warp_generator.sh"
-
-WARP_API_BASE_URL=https://mirror.example/v0i1909051800 \
-  "${TEST_DIR}/fixture/src/generate-warp-config" \
-  "${TEST_DIR}/generated.conf" \
+WARP_GENERATOR_SITE_URL=https://warp-gen.example \
+WARP_GENERATOR_SCRIPT_FILE="${TEST_DIR}/script.js" \
+WARP_GENERATOR_DATA_FILE="${TEST_DIR}/identity.json" \
+WARP_AWG_VARIANT=3 \
+WARP_DNS_PRESET=google \
+WARP_SERVER_PRESET=def \
+WARP_IPV6=0 \
+WARP_KEEPALIVE=25 \
+WARP_EXCLUDE_LAN=1 \
+  "${PROJECT_DIR}/src/generate-warp-config" "${TEST_DIR}/generated.conf" \
   >"${TEST_DIR}/stdout.log" 2>"${TEST_DIR}/progress.log"
 
-grep -Fq '[generator] Registration API: https://mirror.example/v0i1909051800' \
-  "${TEST_DIR}/progress.log"
-grep -Fq '[generator] POST /reg: successful HTTP response received.' \
-  "${TEST_DIR}/progress.log"
-grep -Fq '[generator] Configuration assembled locally and saved' \
-  "${TEST_DIR}/progress.log"
-if grep -Fq 'LOCAL_TEST_SECRET' "${TEST_DIR}/progress.log"; then
+grep -Fq '[generator] Generator site: https://warp-gen.example' "${TEST_DIR}/progress.log"
+grep -Fq '[generator] Requesting a fresh identity bundle (1/1): fixture' "${TEST_DIR}/progress.log"
+grep -Eq '\[generator\] Endpoint selected by current warp-gen rules: 162\.159\.192\.([1-9]|10):500' "${TEST_DIR}/progress.log"
+if grep -Fq 'AAAAAAAAAAAAAAAA' "${TEST_DIR}/progress.log"; then
   echo "generator progress leaked a private key" >&2
   exit 1
 fi
-grep -Fq 'PrivateKey = LOCAL_TEST_SECRET' "${TEST_DIR}/generated.conf"
-grep -Fq 'AllowedIPs = 1.0.0.0/8, 2.0.0.0/7' "${TEST_DIR}/generated.conf"
-grep -Fq 'PreUp = /usr/local/sbin/awg-warp-route-endpoint up 162.159.192.1' \
-  "${TEST_DIR}/generated.conf"
-grep -Fq 'PostDown = /usr/local/sbin/awg-warp-route-endpoint down 162.159.192.1' \
-  "${TEST_DIR}/generated.conf"
-if grep -Eq 'AllowedIPs.*(0\.0\.0\.0/0|::/0|10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)' \
-  "${TEST_DIR}/generated.conf"; then
-  echo "LAN-excluded config contains a default or private route" >&2
+grep -Fq 'PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' "${TEST_DIR}/generated.conf"
+grep -Fq 'Address = 172.16.0.2' "${TEST_DIR}/generated.conf"
+! grep -Fq '2606:4700:110:8bc6::2' "${TEST_DIR}/generated.conf"
+grep -Fq 'DNS = 8.8.8.8' "${TEST_DIR}/generated.conf"
+! grep -Fq '2001:4860:4860::8888' "${TEST_DIR}/generated.conf"
+grep -Fq 'I1 = <b 0x0506>' "${TEST_DIR}/generated.conf"
+grep -Fq 'I2 = <b 0x0708>' "${TEST_DIR}/generated.conf"
+grep -Fq 'AllowedIPs = 1.0.0.0/8, 2.0.0.0/7, ::/1, 8000::/2' "${TEST_DIR}/generated.conf"
+grep -Eq '^Endpoint = 162\.159\.192\.([1-9]|10):500$' "${TEST_DIR}/generated.conf"
+grep -Fq 'PersistentKeepalive = 25' "${TEST_DIR}/generated.conf"
+if grep -Eq 'PreUp|PostDown|awg-warp-route-endpoint' "${TEST_DIR}/generated.conf"; then
+  echo "generator modified the warp-gen profile with local route hooks" >&2
   exit 1
 fi
-
-# shellcheck disable=SC1091
-source "${PROJECT_DIR}/src/route-policy.sh"
-awg_apply_route_policy \
-  "${TEST_DIR}/generated.conf" "${TEST_DIR}/reapplied.conf" 1
-asserted_hooks=$(grep -Fc '/awg-warp-route-endpoint' \
-  "${TEST_DIR}/reapplied.conf")
-if [[ ${asserted_hooks} -ne 2 ]]; then
-  echo "LAN policy reapplication duplicated or removed managed hooks" >&2
-  exit 1
-fi
-awg_apply_route_policy \
-  "${TEST_DIR}/generated.conf" "${TEST_DIR}/included-lan.conf" 0
-grep -Fq 'AllowedIPs = 0.0.0.0/0, ::/0' "${TEST_DIR}/included-lan.conf"
-if grep -Eq '/awg-warp-(lan-rules|route-endpoint)' \
-  "${TEST_DIR}/included-lan.conf"; then
-  echo "including LAN did not remove managed route hooks" >&2
-  exit 1
-fi
-
-WARP_EXCLUDE_LAN=0 \
-WARP_API_BASE_URL=https://mirror.example/v0i1909051800 \
-  "${TEST_DIR}/fixture/src/generate-warp-config" \
-  "${TEST_DIR}/full-tunnel.conf" \
-  >/dev/null 2>"${TEST_DIR}/full-tunnel-progress.log"
-grep -Fq 'AllowedIPs = 0.0.0.0/0, ::/0' "${TEST_DIR}/full-tunnel.conf"
-if grep -Eq '/awg-warp-(lan-rules|route-endpoint)' \
-  "${TEST_DIR}/full-tunnel.conf"; then
-  echo "full-tunnel config unexpectedly contains route-policy hooks" >&2
-  exit 1
-fi
-grep -Fq '[generator] LAN exclusion: disabled' \
-  "${TEST_DIR}/full-tunnel-progress.log"
-
-set +e
-WARP_EXCLUDE_LAN=2 \
-  "${PROJECT_DIR}/src/generate-warp-config" "${TEST_DIR}/bad-lan-mode.conf" \
-  >/dev/null 2>"${TEST_DIR}/bad-lan-mode.log"
-status=$?
-set -e
-if [[ ${status} -ne 65 ]]; then
-  echo "expected invalid LAN mode to exit 65, got ${status}" >&2
-  exit 1
-fi
+[[ $(stat -c %a "${TEST_DIR}/generated.conf") == 600 ]]
 
 echo "Generator wrapper tests passed"

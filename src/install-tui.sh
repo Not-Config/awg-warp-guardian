@@ -44,7 +44,7 @@ tui_valid_url() {
   [[ $1 =~ ^https?://[A-Za-z0-9:/?\&._=%+#@~-]+$ ]]
 }
 
-tui_valid_generator_api_url() {
+tui_valid_generator_site_url() {
   [[ $1 =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]+)*/?$ ]] || return 1
   tui_valid_url_port "$1"
 }
@@ -161,8 +161,7 @@ tui_select_profile() {
     menu_items+=("profile_${index}" "Использовать: ${description}")
   done
   menu_items+=(
-    "new" "Создать новый стандартный профиль Cloudflare WARP"
-    "custom_endpoint" "Создать WARP-профиль со своими endpoint-ами"
+    "new" "Получить и проверить новый профиль с warp-gen"
     "import" "Указать существующий .conf вручную"
   )
 
@@ -181,7 +180,6 @@ tui_select_profile() {
       index=${choice#profile_}
       config_path=${tui_profiles[index]}
       interface=$(basename -- "${config_path}" .conf)
-      custom_endpoints=()
       ;;
     import)
       if ! config_path=$(tui_dialog --title "Существующий профиль" \
@@ -200,9 +198,8 @@ tui_select_profile() {
           --msgbox "Имя файла без .conf должно содержать не более 15 символов: A-Z, a-z, 0-9, _=+.-" 10 80
         return 2
       fi
-      custom_endpoints=()
       ;;
-    new|custom_endpoint)
+    new)
       while true; do
         if ! interface=$(tui_dialog --title "Новый WARP-профиль" \
           --inputbox "Имя сетевого интерфейса (до 15 символов):" \
@@ -216,27 +213,6 @@ tui_select_profile() {
           --msgbox "Допустимы 1–15 символов: A-Z, a-z, 0-9, _=+.-" 9 66
       done
       config_path=""
-      custom_endpoints=()
-      if [[ ${choice} == custom_endpoint ]]; then
-        local endpoint_text endpoint endpoints_valid
-        while true; do
-          if ! endpoint_text=$(tui_dialog --title "WARP endpoint-ы" \
-            --inputbox "Введите HOST:PORT через пробел или запятую:" \
-            12 86 "162.159.192.1:500"); then
-            return 130
-          fi
-          endpoint_text=${endpoint_text//,/ }
-          read -r -a custom_endpoints <<<"${endpoint_text}"
-          endpoints_valid=1
-          ((${#custom_endpoints[@]})) || endpoints_valid=0
-          for endpoint in "${custom_endpoints[@]}"; do
-            tui_valid_endpoint "${endpoint}" || endpoints_valid=0
-          done
-          ((endpoints_valid == 1)) && break
-          tui_dialog --title "Некорректный endpoint" \
-            --msgbox "Используйте формат HOST:PORT, например 162.159.192.1:500. Порт: 1–65535." 10 80
-        done
-      fi
       ;;
   esac
 
@@ -247,9 +223,9 @@ tui_select_profile() {
   interval_option_set=1
   initial_attempts_option_set=1
   lan_option_set=1
-  endpoints_option_set=1
-  generator_api_option_set=1
+  generator_site_option_set=1
   generator_proxy_option_set=1
+  warp_parameters_option_set=1
   reconfigure=1
   return 1
 }
@@ -415,22 +391,85 @@ tui_select_lan_mode() {
   lan_option_set=1
 }
 
+tui_select_warp_parameters() {
+  local ipv6_choice keepalive_choice keepalive_value
+
+  awg_variant=$(tui_dialog --title "Вариант AWG" \
+    --radiolist "Какой вариант AWG 2.0 с warp-gen использовать?" \
+    15 82 4 \
+    1 "Вариант 1 (рекомендуется)" ON \
+    2 "Вариант 2" OFF \
+    3 "Вариант 3" OFF) || return 130
+
+  dns_preset=$(tui_dialog --title "DNS из warp-gen" \
+    --radiolist "Какой DNS подставлять при каждой новой попытке?" \
+    20 88 7 \
+    cf "Cloudflare" ON \
+    google "Google" OFF \
+    malw "MALW" OFF \
+    xbox "Xbox DNS" OFF \
+    geohide "GeoHide" OFF \
+    comss "COMSS" OFF) || return 130
+
+  server_preset=$(tui_dialog --title "Сервер из warp-gen" \
+    --radiolist "Какой сервер выбирать при генерации?" \
+    22 88 11 \
+    def "Стандартный Cloudflare (рекомендуется)" ON \
+    FL "Финляндия" OFF \
+    NL "Нидерланды" OFF \
+    PL "Польша" OFF \
+    LV "Латвия" OFF \
+    DE "Германия" OFF \
+    EE "Эстония" OFF \
+    RU "Россия" OFF \
+    lteFL "Финляндия LTE" OFF \
+    ltePL "Польша LTE" OFF \
+    lteDE "Германия LTE" OFF) || return 130
+
+  ipv6_choice=$(tui_dialog --title "IPv6" \
+    --radiolist "Добавлять IPv6 как на странице warp-gen?" \
+    13 76 3 \
+    yes "Да (на сайте включено по умолчанию)" ON \
+    no "Нет" OFF) || return 130
+  [[ ${ipv6_choice} == yes ]] && warp_ipv6=1 || warp_ipv6=0
+
+  keepalive_choice=$(tui_dialog --title "PersistentKeepalive" \
+    --radiolist "Добавлять PersistentKeepalive?" \
+    13 76 3 \
+    off "Не добавлять (как на сайте по умолчанию)" ON \
+    on "Добавить" OFF) || return 130
+  warp_keepalive=0
+  if [[ ${keepalive_choice} == on ]]; then
+    while true; do
+      keepalive_value=$(tui_dialog --title "PersistentKeepalive" \
+        --inputbox "Секунды, от 1 до 65535:" 10 62 "25") || return 130
+      if [[ ${keepalive_value} =~ ^[1-9][0-9]*$ ]] && ((10#${keepalive_value} <= 65535)); then
+        warp_keepalive=${keepalive_value}
+        break
+      fi
+      tui_dialog --title "Некорректное значение" \
+        --msgbox "Введите целое число от 1 до 65535." 9 60
+    done
+  fi
+  warp_parameters_option_set=1
+}
+
 tui_select_generator_source() {
-  local source_choice custom_api proxy_url
+  local source_choice custom_site proxy_url
 
   while true; do
     if ! source_choice=$(tui_dialog --title "Источник генерации" \
-      --radiolist "Откуда получать регистрацию Cloudflare WARP?" \
+      --radiolist "С какой страницы брать правила и параметры генерации?" \
       17 92 5 \
-      official "Официальный API Cloudflare напрямую (рекомендуется)" ON \
-      proxy "Официальный API через независимый HTTPS-прокси" OFF \
-      custom "Совместимое пользовательское HTTPS-зеркало" OFF); then
+      default "warp-gen.github.io напрямую (рекомендуется)" ON \
+      proxy "warp-gen.github.io через HTTP/HTTPS-прокси" OFF \
+      custom "Совместимое зеркало сайта warp-gen" OFF); then
       return 130
     fi
 
     case "${source_choice}" in
-      official)
-        generator_api_url="https://api.cloudflareclient.com/v0i1909051800"
+      default)
+        generator_site_url="https://warp-gen.github.io"
         generator_https_proxy=""
         return 0
         ;;
@@ -442,7 +481,7 @@ tui_select_generator_source() {
             return 130
           fi
           if tui_valid_generator_proxy "${proxy_url}"; then
-            generator_api_url="https://api.cloudflareclient.com/v0i1909051800"
+            generator_site_url="https://warp-gen.github.io"
             generator_https_proxy=${proxy_url%/}
             return 0
           fi
@@ -453,23 +492,23 @@ tui_select_generator_source() {
       custom)
         if ! tui_dialog --title "Доверие к зеркалу" \
           --yes-button "Понимаю" --no-button "Назад" \
-          --yesno "Приватный ключ останется на сервере, но зеркало сможет вернуть свои параметры peer. Используйте только собственное или доверенное совместимое зеркало." \
+          --yesno "warp-gen и его зеркало возвращают готовый приватный ключ. Источник может его знать — используйте только доверенное зеркало." \
           13 88; then
           continue
         fi
         while true; do
-          if ! custom_api=$(tui_dialog --title "HTTPS-зеркало WARP API" \
-            --inputbox "Базовый URL совместимого API без /reg в конце:" \
-            12 90 "https://mirror.example/v0i1909051800"); then
+          if ! custom_site=$(tui_dialog --title "HTTPS-зеркало warp-gen" \
+            --inputbox "URL страницы, рядом с которой доступен script.js:" \
+            12 90 "https://generator-config-warp.vercel.app"); then
             return 130
           fi
-          if tui_valid_generator_api_url "${custom_api}"; then
-            generator_api_url=${custom_api%/}
+          if tui_valid_generator_site_url "${custom_site}"; then
+            generator_site_url=${custom_site%/}
             generator_https_proxy=""
             return 0
           fi
-          tui_dialog --title "Некорректный API URL" \
-            --msgbox "Нужен HTTPS URL без логина, query и fragment, например https://mirror.example/v0i1909051800" 10 90
+          tui_dialog --title "Некорректный URL" \
+            --msgbox "Нужен HTTPS URL без логина, query и fragment." 10 80
         done
         ;;
     esac
@@ -477,14 +516,9 @@ tui_select_generator_source() {
 }
 
 tui_confirm_install() {
-  local endpoint_summary generator_summary site_lines summary url attempts_summary lan_summary
+  local generator_summary site_lines summary url attempts_summary lan_summary ipv6_summary
 
-  if ((${#custom_endpoints[@]})); then
-    endpoint_summary=$(IFS=,; printf '%s' "${custom_endpoints[*]}")
-  else
-    endpoint_summary="из профиля или стандартный Cloudflare"
-  fi
-  generator_summary=${generator_api_url}
+  generator_summary=${generator_site_url}
   if [[ -n ${generator_https_proxy} ]]; then
     generator_summary+=" через ${generator_https_proxy}"
   fi
@@ -502,10 +536,12 @@ tui_confirm_install() {
   else
     lan_summary="направляется через VPN"
   fi
+  [[ ${warp_ipv6} == 1 ]] && ipv6_summary="включён" || ipv6_summary="выключен"
   summary=$(printf \
-    'Интерфейс: %s\nПрофиль: %s\nEndpoint: %s\nИсточник генерации: %s\nLAN: %s\nПопытки: %s\nЧастота проверки: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
+    'Интерфейс: %s\nПрофиль: %s\nИсточник: %s\nПараметры warp-gen: вариант %s, DNS %s, сервер %s, IPv6 %s, keepalive %s\nLAN: %s\nПопытки: %s\nЧастота проверки: %s\n\nПроверяемые адреса:%b\n\nДля успеха нужно: %s из %s' \
     "${interface}" "${config_path:-будет создан автоматически}" \
-    "${endpoint_summary}" "${generator_summary}" "${lan_summary}" "${attempts_summary}" \
+    "${generator_summary}" "${awg_variant}" "${dns_preset}" "${server_preset}" \
+    "${ipv6_summary}" "${warp_keepalive:-0}" "${lan_summary}" "${attempts_summary}" \
     "${check_interval}" "${site_lines}" \
     "${check_quorum}" "${#custom_urls[@]}")
 
@@ -538,6 +574,7 @@ tui_install_once() {
   tui_select_quorum || return $?
   tui_select_interval || return $?
   tui_select_lan_mode || return $?
+  tui_select_warp_parameters || return $?
   tui_select_generator_source || return $?
   if [[ -z ${config_path} || ! -s ${config_path} ]]; then
     tui_select_initial_attempts || return $?

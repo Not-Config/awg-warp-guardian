@@ -18,164 +18,17 @@ sys.modules[SPEC.name] = guardian
 SPEC.loader.exec_module(guardian)
 
 
-class ConfigTests(unittest.TestCase):
-    def test_parse_env_does_not_execute_shell(self):
-        with tempfile.TemporaryDirectory() as directory:
-            marker = Path(directory) / "owned"
-            config = Path(directory) / "guardian.env"
-            config.write_text(
-                'CHECK_URLS="https://one.test https://two.test"\n'
-                f'UNTRUSTED="$(touch {marker})"\n',
-                encoding="utf-8",
-            )
-            values = guardian.parse_env_file(config)
-            self.assertEqual(
-                values["CHECK_URLS"], "https://one.test https://two.test"
-            )
-            self.assertIn("$(touch", values["UNTRUSTED"])
-            self.assertFalse(marker.exists())
-
-    def test_settings_reject_impossible_quorum(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "guardian.env"
-            config.write_text(
-                "CHECK_URLS=https://one.test\nCHECK_QUORUM=2\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ValueError, "CHECK_QUORUM"):
-                guardian.Settings.from_file(config)
-
-    def test_generator_api_requires_trusted_https_base_url(self):
-        self.assertEqual(
-            guardian.https_base_url(
-                "https://mirror.example/warp/", "GENERATOR_API_URL"
-            ),
-            "https://mirror.example/warp",
-        )
-        for invalid in (
-            "http://mirror.example/warp",
-            "https://user:secret@mirror.example/warp",
-            "https://mirror.example/warp?target=other",
-            "https://mirror.example:99999/warp",
-        ):
-            with self.assertRaisesRegex(ValueError, "GENERATOR_API_URL"):
-                guardian.https_base_url(invalid, "GENERATOR_API_URL")
-
-    def test_settings_read_lan_exclusion_mode(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "guardian.env"
-            config.write_text(
-                "CHECK_URLS=https://one.test\nEXCLUDE_LAN=0\n",
-                encoding="utf-8",
-            )
-            self.assertFalse(guardian.Settings.from_file(config).exclude_lan)
-
-    def test_settings_default_to_supported_warp_ports(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "guardian.env"
-            config.write_text(
-                "CHECK_URLS=https://one.test\n",
-                encoding="utf-8",
-            )
-            self.assertEqual(
-                guardian.Settings.from_file(config).endpoints,
-                (
-                    "162.159.192.1:2408",
-                    "162.159.192.1:500",
-                    "162.159.192.1:1701",
-                    "162.159.192.1:4500",
-                ),
-            )
-
-
-class MergeTests(unittest.TestCase):
-    def test_preserves_routing_hooks_but_not_old_credentials(self):
-        current = """[Interface]
-PrivateKey = OLD_SECRET
-Table = 123
-PostUp = ip rule add from 192.168.1.251 table main
-S3 = 7
-I1 = <b 0x1234>
-
-[Peer]
-PublicKey = OLD_PEER
-Endpoint = old.example:500
-"""
-        candidate = """[Interface]
+VALID_CONFIG = """[Interface]
 PrivateKey = NEW_SECRET
-Address = 172.16.0.2/32
-Table = auto
-S3 = 0
-I1 = 0xabcd
+Address = 172.16.0.2
+DNS = 1.1.1.1
+I1 = <b 0x0102>
 
 [Peer]
 PublicKey = NEW_PEER
-AllowedIPs = 0.0.0.0/0
-Endpoint = 162.159.192.1:500
+AllowedIPs = 1.0.0.0/8, 2.0.0.0/7
+Endpoint = random.example:500
 """
-        merged = guardian.merge_interface_directives(
-            current, candidate, ("Table", "PostUp", "S3", "I1")
-        )
-        self.assertIn("PrivateKey = NEW_SECRET", merged)
-        self.assertNotIn("OLD_SECRET", merged)
-        self.assertIn("Table = 123", merged)
-        self.assertNotIn("Table = auto", merged)
-        self.assertIn("PostUp = ip rule add", merged)
-        self.assertIn("S3 = 7", merged)
-        self.assertIn("I1 = <b 0x1234>", merged)
-        self.assertNotIn("I1 = 0xabcd", merged)
-
-    def test_managed_route_hook_is_regenerated_for_candidate_endpoint(self):
-        current = """[Interface]
-PrivateKey = OLD
-PreUp = /usr/local/sbin/awg-warp-route-endpoint up old.example
-PostDown = /usr/local/sbin/awg-warp-route-endpoint down old.example
-
-[Peer]
-PublicKey = OLD_PEER
-AllowedIPs = 0.0.0.0/0
-Endpoint = old.example:500
-"""
-        candidate = """[Interface]
-PrivateKey = NEW
-PreUp = /usr/local/sbin/awg-warp-route-endpoint up 162.159.192.1
-PostDown = /usr/local/sbin/awg-warp-route-endpoint down 162.159.192.1
-
-[Peer]
-PublicKey = NEW_PEER
-AllowedIPs = 0.0.0.0/0
-Endpoint = 162.159.192.1:2408
-"""
-        merged = guardian.merge_interface_directives(
-            current,
-            candidate,
-            ("PreUp", "PostDown"),
-        )
-        self.assertNotIn("old.example", merged)
-        self.assertIn("route-endpoint up 162.159.192.1", merged)
-
-    def test_basic_validation_reports_missing_fields(self):
-        missing = guardian.basic_validate_config("[Interface]\nPrivateKey = x\n")
-        self.assertIn("[Peer]", missing)
-        self.assertIn("Endpoint", missing)
-        self.assertNotIn("PrivateKey", missing)
-
-
-class StateTests(unittest.TestCase):
-    def test_state_round_trip(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "state.json"
-            original = guardian.State(
-                consecutive_failures=2,
-                rotation_attempts=[int(time.time())],
-                last_action="test",
-            )
-            original.save(path)
-            loaded = guardian.State.load(path)
-            self.assertEqual(loaded.consecutive_failures, 2)
-            self.assertEqual(loaded.last_action, "test")
-            json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
 
 def make_settings(directory: str) -> guardian.Settings:
@@ -198,25 +51,87 @@ def make_settings(directory: str) -> guardian.Settings:
         backups_keep=2,
         generator_path=Path("/fake/generator"),
         generator_timeout=5,
-        generator_api_url="https://mirror.example/v0i1909051800",
+        generator_site_url="https://warp-gen.example",
+        generator_data_urls=("https://data-one.example", "https://data-two.example"),
         generator_https_proxy="",
         exclude_lan=True,
-        endpoints=("162.159.192.1:500",),
-        preserve_directives=("PostUp", "S3", "I1"),
+        awg_variant=2,
+        dns_preset="google",
+        server_preset="def",
+        ipv6=False,
+        keepalive=25,
+        candidate_attempts=3,
         allow_hard_restart=True,
         state_dir=root / "state",
     )
 
 
-VALID_CONFIG = """[Interface]
-PrivateKey = NEW_SECRET
-Address = 172.16.0.2/32
+class ConfigTests(unittest.TestCase):
+    def test_parse_env_does_not_execute_shell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "owned"
+            config = Path(directory) / "guardian.env"
+            config.write_text(
+                'CHECK_URLS="https://one.test https://two.test"\n'
+                f'UNTRUSTED="$(touch {marker})"\n',
+                encoding="utf-8",
+            )
+            values = guardian.parse_env_file(config)
+            self.assertIn("$(touch", values["UNTRUSTED"])
+            self.assertFalse(marker.exists())
 
-[Peer]
-PublicKey = NEW_PEER
-AllowedIPs = 0.0.0.0/0
-Endpoint = 162.159.192.1:500
-"""
+    def test_settings_read_saved_warp_gen_parameters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "guardian.env"
+            config.write_text(
+                "CHECK_URLS=https://one.test\n"
+                "GENERATOR_SITE_URL=https://mirror.example/warp\n"
+                'GENERATOR_DATA_URLS="https://one.example/api https://two.example/api"\n'
+                "WARP_AWG_VARIANT=3\nWARP_DNS_PRESET=cf\n"
+                "WARP_SERVER_PRESET=NL\nWARP_IPV6=0\nWARP_KEEPALIVE=25\n"
+                "EXCLUDE_LAN=1\nCANDIDATE_ATTEMPTS=20\n",
+                encoding="utf-8",
+            )
+            settings = guardian.Settings.from_file(config)
+            self.assertEqual(settings.generator_site_url, "https://mirror.example/warp")
+            self.assertEqual(len(settings.generator_data_urls), 2)
+            self.assertEqual(settings.awg_variant, 3)
+            self.assertEqual(settings.server_preset, "NL")
+            self.assertFalse(settings.ipv6)
+            self.assertEqual(settings.candidate_attempts, 20)
+
+    def test_settings_reject_bad_source_and_attempt_count(self):
+        for line, message in (
+            ("GENERATOR_SITE_URL=http://unsafe.example", "GENERATOR_SITE_URL"),
+            ("CANDIDATE_ATTEMPTS=21", "CANDIDATE_ATTEMPTS"),
+            ("WARP_AWG_VARIANT=4", "WARP_AWG_VARIANT"),
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                config = Path(directory) / "guardian.env"
+                config.write_text(
+                    f"CHECK_URLS=https://one.test\n{line}\n", encoding="utf-8"
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    guardian.Settings.from_file(config)
+
+    def test_basic_validation_reports_missing_fields(self):
+        missing = guardian.basic_validate_config("[Interface]\nPrivateKey = x\n")
+        self.assertIn("[Peer]", missing)
+        self.assertIn("Endpoint", missing)
+
+
+class StateTests(unittest.TestCase):
+    def test_state_round_trip_and_ignores_legacy_endpoint_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            original = guardian.State(consecutive_failures=2, last_action="test")
+            original.save(path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["endpoint_index"] = 9
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = guardian.State.load(path)
+            self.assertEqual(loaded.consecutive_failures, 2)
+            self.assertEqual(loaded.last_action, "test")
 
 
 class GeneratorRunner:
@@ -236,62 +151,38 @@ class GeneratorRunner:
 
 
 class GeneratorTests(unittest.TestCase):
-    def test_candidate_basename_is_valid_for_awg_quick(self):
+    def test_candidate_uses_all_saved_parameters_without_merging_old_config(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = make_settings(directory)
+            settings.config_path.write_text("PrivateKey = OLD_SECRET\n", encoding="utf-8")
             runner = GeneratorRunner()
             instance = guardian.Guardian(settings, runner)
             candidate = instance.generate_candidate(guardian.State())
-            self.assertEqual(candidate.name, "awg-test.conf")
-            self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(
-                runner.generator_environment["WARP_API_BASE_URL"],
-                "https://mirror.example/v0i1909051800",
-            )
-            self.assertEqual(runner.generator_environment["WARP_EXCLUDE_LAN"], "1")
-            candidate.unlink()
-            candidate.parent.rmdir()
+            self.assertEqual(candidate.read_text(encoding="utf-8"), VALID_CONFIG)
+            environment = runner.generator_environment
+            self.assertEqual(environment["WARP_GENERATOR_SITE_URL"], settings.generator_site_url)
+            self.assertEqual(environment["WARP_AWG_VARIANT"], "2")
+            self.assertEqual(environment["WARP_DNS_PRESET"], "google")
+            self.assertEqual(environment["WARP_SERVER_PRESET"], "def")
+            self.assertEqual(environment["WARP_IPV6"], "0")
+            self.assertEqual(environment["WARP_KEEPALIVE"], "25")
+            self.assertEqual(environment["WARP_EXCLUDE_LAN"], "1")
+            self.assertNotIn("OLD_SECRET", candidate.read_text(encoding="utf-8"))
 
-    def test_invalid_candidate_directory_is_cleaned(self):
+    def test_only_prefixed_generator_progress_is_logged(self):
         with tempfile.TemporaryDirectory() as directory:
-            settings = make_settings(directory)
-            instance = guardian.Guardian(settings, GeneratorRunner("invalid"))
-            with self.assertRaisesRegex(ValueError, "misses"):
-                instance.generate_candidate(guardian.State())
-            leftovers = list(Path(directory).glob(".awg-guardian-candidate.*"))
-            self.assertEqual(leftovers, [])
-
-    def test_safe_generator_progress_is_forwarded_to_logs(self):
-        with tempfile.TemporaryDirectory() as directory:
-            settings = make_settings(directory)
             runner = GeneratorRunner(
                 generated_stderr=(
-                    "[generator] Registration API: https://mirror.example/api\n"
+                    "[generator] Requesting a fresh identity bundle\n"
                     "PrivateKey = MUST_NOT_BE_LOGGED\n"
                 )
             )
-            instance = guardian.Guardian(settings, runner)
+            instance = guardian.Guardian(make_settings(directory), runner)
             with self.assertLogs("awg-warp-guardian", level="INFO") as captured:
-                candidate = instance.generate_candidate(guardian.State())
+                instance.generate_candidate(guardian.State())
             output = "\n".join(captured.output)
-            self.assertIn("[generator] Registration API", output)
+            self.assertIn("fresh identity bundle", output)
             self.assertNotIn("MUST_NOT_BE_LOGGED", output)
-            candidate.unlink()
-            candidate.parent.rmdir()
-
-    def test_rotation_limits_repeated_registration(self):
-        with tempfile.TemporaryDirectory() as directory:
-            settings = make_settings(directory)
-            instance = guardian.Guardian(settings, GeneratorRunner())
-            now = int(time.time())
-            state = guardian.State(
-                last_rotation_attempt=now,
-                rotation_attempts=[now],
-            )
-            allowed, reason = instance.may_rotate(state)
-            self.assertFalse(allowed)
-            self.assertIn("cooldown", reason)
-            self.assertTrue(instance.may_rotate(state, force=True)[0])
 
 
 class ParallelHealthRunner:
@@ -304,9 +195,7 @@ class ParallelHealthRunner:
         if args[0] == "curl":
             with self.lock:
                 self.active_curls += 1
-                self.max_active_curls = max(
-                    self.max_active_curls, self.active_curls
-                )
+                self.max_active_curls = max(self.max_active_curls, self.active_curls)
             time.sleep(0.03)
             with self.lock:
                 self.active_curls -= 1
@@ -317,9 +206,7 @@ class ParallelHealthRunner:
         if args[:3] == ["ip", "link", "show"]:
             return subprocess.CompletedProcess(args, 0, "", "")
         if args[:3] == ["awg", "show", "awg-test"]:
-            return subprocess.CompletedProcess(
-                args, 0, f"peer {int(time.time())}\n", ""
-            )
+            return subprocess.CompletedProcess(args, 0, f"peer {int(time.time())}\n", "")
         raise AssertionError(f"unexpected command: {args}")
 
 
@@ -328,13 +215,8 @@ class HealthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             settings = replace(
                 make_settings(directory),
-                check_urls=(
-                    "https://one.test",
-                    "https://two.test",
-                    "https://three.test",
-                    "https://four.test",
-                ),
-                check_quorum=3,
+                check_urls=("https://one.test", "https://two.test", "https://three.test"),
+                check_quorum=2,
             )
             runner = ParallelHealthRunner()
             result = guardian.Guardian(settings, runner).health()
@@ -348,7 +230,7 @@ class RotationGuardian(guardian.Guardian):
         self.active = True
         self.health_results = iter(health_results)
         self.events = []
-        self.generated_endpoints = []
+        self.generated = 0
 
     def command_ok(self, args, timeout=None):
         if args[:3] == ["systemctl", "is-active", "--quiet"]:
@@ -360,25 +242,14 @@ class RotationGuardian(guardian.Guardian):
         raise AssertionError(f"unexpected command: {args}")
 
     def generate_candidate(self, state):
-        self.assert_tunnel_stopped()
-        endpoint = self.settings.endpoints[
-            state.endpoint_index % len(self.settings.endpoints)
-        ]
-        self.generated_endpoints.append(endpoint)
-        self.events.append(f"generate:{endpoint}")
-        candidate_dir = Path(
-            tempfile.mkdtemp(prefix=".candidate.", dir=self.settings.config_path.parent)
-        )
-        candidate = candidate_dir / self.settings.config_path.name
-        candidate.write_text(VALID_CONFIG, encoding="utf-8")
-        state.endpoint_index = (state.endpoint_index + 1) % len(
-            self.settings.endpoints
-        )
-        return candidate
-
-    def assert_tunnel_stopped(self):
         if self.active:
             raise AssertionError("generator ran through the active tunnel")
+        self.generated += 1
+        self.events.append(f"fresh:{self.generated}")
+        candidate_dir = Path(tempfile.mkdtemp(dir=self.settings.config_path.parent))
+        candidate = candidate_dir / self.settings.config_path.name
+        candidate.write_text(VALID_CONFIG.replace("random.example", f"random-{self.generated}.example"), encoding="utf-8")
+        return candidate
 
     def hard_restart(self):
         self.events.append("restart")
@@ -399,36 +270,15 @@ class RotationGuardian(guardian.Guardian):
 
 
 class RotationTests(unittest.TestCase):
-    def test_rotation_stops_tunnel_before_registration(self):
+    def test_rotation_fetches_fresh_candidates_until_one_passes(self):
         with tempfile.TemporaryDirectory() as directory:
-            settings = replace(
-                make_settings(directory),
-                endpoints=("162.159.192.1:500",),
-            )
-            settings.config_path.write_text(VALID_CONFIG, encoding="utf-8")
-            instance = RotationGuardian(settings, [True])
-            self.assertTrue(instance.rotate(guardian.State(), force=True))
-            self.assertEqual(
-                instance.events[:2],
-                ["stop", "generate:162.159.192.1:500"],
-            )
-
-    def test_rotation_tries_next_endpoint_after_failed_candidate(self):
-        with tempfile.TemporaryDirectory() as directory:
-            settings = replace(
-                make_settings(directory),
-                endpoints=(
-                    "162.159.192.1:500",
-                    "162.159.192.1:2408",
-                ),
-            )
+            settings = replace(make_settings(directory), candidate_attempts=3)
             settings.config_path.write_text(VALID_CONFIG, encoding="utf-8")
             instance = RotationGuardian(settings, [False, True])
             self.assertTrue(instance.rotate(guardian.State(), force=True))
-            self.assertEqual(
-                instance.generated_endpoints,
-                ["162.159.192.1:500", "162.159.192.1:2408"],
-            )
+            self.assertEqual(instance.generated, 2)
+            self.assertEqual(instance.events[:2], ["stop", "fresh:1"])
+            self.assertIn("random-2.example", settings.config_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

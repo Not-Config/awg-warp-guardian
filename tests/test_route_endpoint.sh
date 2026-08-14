@@ -47,4 +47,30 @@ GETENT_COMMAND="${TEST_DIR}/getent" \
 grep -Fq -- '-4 route replace 162.159.192.2/32 via 192.168.1.1 dev ens18 table main proto 186' \
   "${TEST_DIR}/ip.log"
 
+printf '%s\n' \
+  '[Interface]' \
+  'PrivateKey = hidden' \
+  '' \
+  '[Peer]' \
+  'Endpoint = example.test:500' \
+  >"${TEST_DIR}/candidate.conf"
+: >"${TEST_DIR}/ip.log"
+IP_LOG="${TEST_DIR}/ip.log" \
+IP_COMMAND="${TEST_DIR}/ip" \
+GETENT_COMMAND="${TEST_DIR}/getent" \
+  "${PROJECT_DIR}/src/route-endpoint" up-config \
+  "${TEST_DIR}/candidate.conf" "${TEST_DIR}/endpoint.state"
+grep -Fq '162.159.192.2' "${TEST_DIR}/endpoint.state"
+grep -Fq -- '-4 route replace 162.159.192.2/32 via 192.168.1.1 dev ens18 table main proto 186' \
+  "${TEST_DIR}/ip.log"
+
+: >"${TEST_DIR}/ip.log"
+IP_LOG="${TEST_DIR}/ip.log" \
+IP_COMMAND="${TEST_DIR}/ip" \
+GETENT_COMMAND="${TEST_DIR}/getent" \
+  "${PROJECT_DIR}/src/route-endpoint" down-state "${TEST_DIR}/endpoint.state"
+grep -Fq -- '-4 route del 162.159.192.2/32 table main proto 186' \
+  "${TEST_DIR}/ip.log"
+[[ ! -e ${TEST_DIR}/endpoint.state ]]
+
 echo "Endpoint route tests passed"

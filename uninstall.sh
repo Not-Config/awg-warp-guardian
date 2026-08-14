@@ -13,6 +13,13 @@ if ((EUID != 0)); then
   exit 77
 fi
 
+guardian_interface=""
+if [[ -r /etc/awg-warp-guardian/guardian.env ]]; then
+  guardian_interface=$(sed -n 's/^INTERFACE=//p' /etc/awg-warp-guardian/guardian.env | head -n 1)
+  guardian_interface=${guardian_interface%\"}
+  guardian_interface=${guardian_interface#\"}
+fi
+
 systemctl disable --now awg-warp-guardian.timer >/dev/null 2>&1 || true
 rm -f -- \
   /etc/systemd/system/awg-warp-guardian.service \
@@ -20,6 +27,13 @@ rm -f -- \
   /etc/systemd/system/awg-warp-guardian.timer.d/10-interval.conf \
   /usr/local/sbin/awg-warp-guardian
 rmdir /etc/systemd/system/awg-warp-guardian.timer.d 2>/dev/null || true
+if [[ ${guardian_interface} =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]]; then
+  endpoint_dropin_dir="/etc/systemd/system/awg-quick@${guardian_interface}.service.d"
+  rm -f -- "${endpoint_dropin_dir}/10-endpoint-route.conf"
+  rmdir "${endpoint_dropin_dir}" 2>/dev/null || true
+  /usr/local/sbin/awg-warp-route-endpoint down-state \
+    "/run/awg-warp-guardian/${guardian_interface}.endpoint" 2>/dev/null || true
+fi
 rm -rf -- /usr/local/lib/awg-warp-guardian
 systemctl daemon-reload
 

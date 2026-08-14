@@ -5,12 +5,44 @@ readonly IP_COMMAND=${IP_COMMAND:-ip}
 readonly GETENT_COMMAND=${GETENT_COMMAND:-getent}
 readonly ROUTE_PROTOCOL=186
 
-if [[ $# -ne 2 || ($1 != up && $1 != down) ]]; then
-  echo "Usage: route-endpoint up|down HOST" >&2
+if [[ $# -eq 2 && ($1 == up || $1 == down) ]]; then
+  ACTION=$1
+  ENDPOINT_HOST=$2
+  STATE_FILE=""
+elif [[ $# -eq 3 && $1 == up-config ]]; then
+  ACTION=up
+  CONFIG_FILE=$2
+  STATE_FILE=$3
+  if [[ ! -r ${CONFIG_FILE} ]]; then
+    echo "Configuration is not readable: ${CONFIG_FILE}" >&2
+    exit 66
+  fi
+  endpoint=$(sed -n -E \
+    's/^[[:space:]]*Endpoint[[:space:]]*=[[:space:]]*([^[:space:]#]+).*$/\1/p' \
+    "${CONFIG_FILE}" | head -n 1)
+  ENDPOINT_HOST=${endpoint%:*}
+  ENDPOINT_HOST=${ENDPOINT_HOST#[}
+  ENDPOINT_HOST=${ENDPOINT_HOST%]}
+elif [[ $# -eq 2 && $1 == down-state ]]; then
+  ACTION=down-state
+  STATE_FILE=$2
+  ENDPOINT_HOST=""
+else
+  echo "Usage: route-endpoint up|down HOST | up-config CONFIG STATE | down-state STATE" >&2
   exit 64
 fi
-readonly ACTION=$1
-readonly ENDPOINT_HOST=$2
+readonly ACTION ENDPOINT_HOST STATE_FILE
+
+if [[ ${ACTION} == down-state ]]; then
+  [[ -r ${STATE_FILE} ]] || exit 0
+  endpoint_ip=$(sed -n '1p' "${STATE_FILE}")
+  if [[ ${endpoint_ip} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    "${IP_COMMAND}" -4 route del "${endpoint_ip}/32" table main \
+      proto "${ROUTE_PROTOCOL}" 2>/dev/null || true
+  fi
+  rm -f -- "${STATE_FILE}"
+  exit 0
+fi
 
 if [[ ! ${ENDPOINT_HOST} =~ ^[A-Za-z0-9.-]+$ ]]; then
   echo "Endpoint host must be an IPv4 address or DNS name" >&2
@@ -49,3 +81,11 @@ if [[ -n ${gateway} ]]; then
 fi
 route_args+=(dev "${device}" table main proto "${ROUTE_PROTOCOL}")
 "${IP_COMMAND}" "${route_args[@]}"
+
+if [[ -n ${STATE_FILE} ]]; then
+  install -d -m 755 "$(dirname -- "${STATE_FILE}")"
+  state_tmp=$(mktemp "$(dirname -- "${STATE_FILE}")/.endpoint.XXXXXX")
+  printf '%s\n' "${endpoint_ip}" >"${state_tmp}"
+  chmod 600 "${state_tmp}"
+  mv -f -- "${state_tmp}" "${STATE_FILE}"
+fi

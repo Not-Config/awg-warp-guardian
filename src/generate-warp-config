@@ -1,115 +1,366 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
+#!/usr/bin/env python3
+"""Build one AWG profile with the current rules published by warp-gen."""
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: generate-warp-config OUTPUT.conf" >&2
-  exit 64
-fi
+from __future__ import annotations
 
-readonly OUTPUT=$1
-readonly SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-readonly ROUTE_POLICY_SCRIPT="${SCRIPT_DIR}/route-policy.sh"
-UPSTREAM_SCRIPT="${SCRIPT_DIR}/vendor/warp_generator.sh"
-if [[ ! -x ${UPSTREAM_SCRIPT} && -x ${SCRIPT_DIR}/../vendor/warp_generator.sh ]]; then
-  UPSTREAM_SCRIPT="${SCRIPT_DIR}/../vendor/warp_generator.sh"
-fi
-readonly UPSTREAM_SCRIPT
-readonly ENDPOINT=${WARP_ENDPOINT:-162.159.192.1:500}
-API_BASE_URL=${WARP_API_BASE_URL:-https://api.cloudflareclient.com/v0i1909051800}
-API_BASE_URL=${API_BASE_URL%/}
-readonly API_BASE_URL
-EXCLUDE_LAN=${WARP_EXCLUDE_LAN:-1}
-readonly EXCLUDE_LAN
+import ipaddress
+import json
+import os
+import re
+import secrets
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
-generator_log() {
-  printf '[generator] %s\n' "$*" >&2
-}
 
-if [[ ! -x "${UPSTREAM_SCRIPT}" ]]; then
-  echo "Bundled WARP generator is missing" >&2
-  exit 69
-fi
-if [[ ! -r ${ROUTE_POLICY_SCRIPT} ]]; then
-  echo "Bundled route policy helper is missing" >&2
-  exit 69
-fi
-# shellcheck disable=SC1090
-source "${ROUTE_POLICY_SCRIPT}"
-if ! awg_valid_lan_mode "${EXCLUDE_LAN}"; then
-  echo "WARP_EXCLUDE_LAN must be 0 or 1" >&2
-  exit 65
-fi
-if [[ ! "${ENDPOINT}" =~ ^(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):[0-9]{1,5}$ ]]; then
-  echo "WARP_ENDPOINT has an invalid host:port value" >&2
-  exit 65
-fi
-endpoint_port=${ENDPOINT##*:}
-endpoint_port_number=$((10#${endpoint_port}))
-if ((endpoint_port_number < 1 || endpoint_port_number > 65535)); then
-  echo "WARP_ENDPOINT port must be between 1 and 65535" >&2
-  exit 65
-fi
-if [[ ! ${API_BASE_URL} =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]+)*$ ]]; then
-  echo "WARP_API_BASE_URL must be an HTTPS base URL without a query or fragment" >&2
-  exit 65
-fi
-api_authority=${API_BASE_URL#https://}
-api_authority=${api_authority%%/*}
-if [[ ${api_authority} == *:* ]]; then
-  api_port=${api_authority##*:}
-  api_port_number=$((10#${api_port}))
-  if ((api_port_number < 1 || api_port_number > 65535)); then
-    echo "WARP_API_BASE_URL port must be between 1 and 65535" >&2
-    exit 65
-  fi
-fi
+MAX_SCRIPT_BYTES = 2 * 1024 * 1024
+MAX_JSON_BYTES = 64 * 1024
 
-work_dir=$(mktemp -d)
-cleanup() {
-  rm -rf -- "${work_dir}"
-}
-trap cleanup EXIT
 
-generator_log "Ready configurations are not downloaded: the private key is created locally."
-generator_log "Registration API: ${API_BASE_URL}"
-if [[ -n ${HTTPS_PROXY:-${https_proxy:-}} ]]; then
-  generator_log "Transport: configured HTTP/HTTPS proxy (address hidden)."
-else
-  generator_log "Transport: direct HTTPS connection."
-fi
-generator_log "Creating a local key and requesting WARP registration parameters..."
-if [[ ${EXCLUDE_LAN} == 1 ]]; then
-  generator_log "LAN exclusion: enabled (private/local networks stay direct)."
-else
-  generator_log "LAN exclusion: disabled (full IPv4/IPv6 tunnel)."
-fi
+class WarpGenError(RuntimeError):
+    pass
 
-if ! (
-  cd -- "${work_dir}"
-  # The bundled MIT-licensed generator is sanitized and performs no package
-  # management or secret-bearing terminal output.
-  WARP_GENERATOR_VERBOSE=1 \
-  WARP_API_BASE_URL="${API_BASE_URL}" \
-    bash "${UPSTREAM_SCRIPT}" >/dev/null
-); then
-  generator_log "Registration failed; no configuration was installed."
-  exit 70
-fi
 
-if [[ ! -s "${work_dir}/warp.conf" ]]; then
-  generator_log "API exchange finished, but the generator did not produce a config."
-  exit 70
-fi
+def log(message: str) -> None:
+    print(f"[generator] {message}", file=sys.stderr, flush=True)
 
-generator_log "Registration accepted; peer parameters were received from the API."
 
-sed -E "s|^[[:space:]]*Endpoint[[:space:]]*=.*$|Endpoint = ${ENDPOINT}|" \
-  "${work_dir}/warp.conf" >"${work_dir}/endpoint.conf"
-if ! awg_apply_route_policy \
-  "${work_dir}/endpoint.conf" "${work_dir}/final.conf" "${EXCLUDE_LAN}"; then
-  generator_log "Could not apply the selected LAN routing policy."
-  exit 70
-fi
-install -D -m 600 "${work_dir}/final.conf" "${OUTPUT}"
-config_size=$(wc -c <"${OUTPUT}")
-generator_log "Configuration assembled locally and saved (${config_size} bytes; secrets hidden)."
+def env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name, "1" if default else "0").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise WarpGenError(f"{name} must be 0 or 1")
+
+
+def https_url(value: str, name: str) -> str:
+    value = value.rstrip("/")
+    parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise WarpGenError(f"{name} contains an invalid port") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise WarpGenError(
+            f"{name} must be an HTTPS URL without credentials, query, or fragment"
+        )
+    return value
+
+
+def download(url: str, limit: int, *, accept: str) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": accept,
+            "Cache-Control": "no-cache",
+            "User-Agent": "awg-warp-guardian/warp-gen-compatible",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=12) as response:
+        content = response.read(limit + 1)
+    if len(content) > limit:
+        raise WarpGenError(f"response from {urlsplit(url).netloc} is too large")
+    return content
+
+
+def load_script(site_url: str) -> str:
+    fixture = os.environ.get("WARP_GENERATOR_SCRIPT_FILE", "")
+    if fixture:
+        content = Path(fixture).read_bytes()
+        if len(content) > MAX_SCRIPT_BYTES:
+            raise WarpGenError("generator script fixture is too large")
+    else:
+        script_url = urljoin(site_url + "/", "script.js")
+        log(f"Downloading current generator rules: {script_url}")
+        content = download(script_url, MAX_SCRIPT_BYTES, accept="text/javascript,*/*;q=0.1")
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WarpGenError("generator script is not valid UTF-8") from exc
+
+
+def parse_data_urls(script: str) -> list[str]:
+    override = os.environ.get("WARP_GENERATOR_DATA_URLS", "").strip()
+    if override:
+        candidates = [part for part in re.split(r"[\s,]+", override) if part]
+    else:
+        start = script.find("const fetchFullConfig = async")
+        end = script.find("const fetchFullConfigMSQ", start + 1)
+        if start < 0 or end < 0:
+            raise WarpGenError("could not find warp-gen data-source list")
+        match = re.search(r"const endpoints\s*=\s*\[(.*?)\];", script[start:end], re.S)
+        if not match:
+            raise WarpGenError("could not parse warp-gen data-source list")
+        candidates = re.findall(r"['\"](https://[^'\"]+)['\"]", match.group(1))
+    if not candidates:
+        raise WarpGenError("warp-gen did not publish a data source")
+    return [https_url(candidate, "WARP_GENERATOR_DATA_URLS") for candidate in candidates]
+
+
+def parse_ports(script: str) -> list[int]:
+    match = re.search(r"const ports\s*=\s*\[([0-9,\s]+)\]", script)
+    if not match:
+        raise WarpGenError("could not parse warp-gen endpoint ports")
+    ports = [int(value) for value in re.findall(r"\d+", match.group(1))]
+    if not ports or any(port < 1 or port > 65535 for port in ports):
+        raise WarpGenError("warp-gen endpoint port list is invalid")
+    return ports
+
+
+def parse_endpoint_rules(script: str) -> tuple[list[str], dict[str, str]]:
+    prefix_match = re.search(r"const prefixes\s*=\s*\[(.*?)\];", script, re.S)
+    map_match = re.search(r"const serverMap\s*=\s*\{(.*?)\};", script, re.S)
+    if not prefix_match or not map_match:
+        raise WarpGenError("could not parse warp-gen endpoint rules")
+    prefixes = re.findall(r"['\"]([A-Za-z0-9.-]+)['\"]", prefix_match.group(1))
+    server_map = dict(
+        re.findall(
+            r"['\"]([A-Za-z0-9]+)['\"]\s*:\s*['\"]([A-Za-z0-9.-]+)['\"]",
+            map_match.group(1),
+        )
+    )
+    if not prefixes or not server_map:
+        raise WarpGenError("warp-gen endpoint rules are empty")
+    return prefixes, server_map
+
+
+def parse_dns(script: str, dns_id: str) -> str:
+    start = script.find("function getSelectedDNS()")
+    end = script.find("function getSelectedSites()", start + 1)
+    if start < 0 or end < 0:
+        raise WarpGenError("could not find warp-gen DNS rules")
+    choices = dict(
+        re.findall(
+            r"getElementById\('([A-Za-z0-9_-]+)'\)\.checked\).*?return \"([^\"]+)\"",
+            script[start:end],
+            re.S,
+        )
+    )
+    if dns_id not in choices:
+        raise WarpGenError(f"DNS preset {dns_id!r} is not published by warp-gen")
+    values = [item.strip() for item in choices[dns_id].split(",")]
+    try:
+        for value in values:
+            ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise WarpGenError("warp-gen DNS preset contains an invalid address") from exc
+    return ", ".join(values)
+
+
+def parse_i_lines(script: str, variant: int) -> list[str]:
+    marker = f"// AWGm{variant}"
+    start = script.find(marker)
+    if start < 0:
+        raise WarpGenError(f"could not find warp-gen AWG variant {variant}")
+    next_positions = [
+        position
+        for number in range(1, 4)
+        if number != variant
+        for position in [script.find(f"// AWGm{number}", start + len(marker))]
+        if position >= 0
+    ]
+    end = min(next_positions, default=len(script))
+    match = re.search(r"else \{i1Value = '([^']+)'\}", script[start:end])
+    if not match:
+        raise WarpGenError(f"could not parse warp-gen AWG variant {variant}")
+    encoded = match.group(1)
+    if re.search(r"\\(?!n)", encoded):
+        raise WarpGenError("warp-gen AWG template contains an unsupported escape")
+    lines = encoded.replace("\\n", "\n").splitlines()
+    if not lines or len("\n".join(lines)) > 32 * 1024:
+        raise WarpGenError("warp-gen AWG template is empty or too large")
+    for line in lines:
+        if not re.fullmatch(r"I[12] = <b 0x[0-9A-Fa-f]+>", line):
+            raise WarpGenError("warp-gen AWG template contains an unsafe directive")
+    return lines
+
+
+def parse_lan_exclusion(script: str) -> str:
+    start = script.find("function getSelectedSites()")
+    end = script.find("const modal", start + 1)
+    if start < 0 or end < 0:
+        raise WarpGenError("could not find warp-gen routing rules")
+    match = re.search(
+        r"toggleCheckbox.*?toggleCheckbox\.checked\).*?return \"([^\"]+)\"",
+        script[start:end],
+        re.S,
+    )
+    if not match:
+        raise WarpGenError("could not parse warp-gen LAN-exclusion routes")
+    routes = [item.strip() for item in match.group(1).split(",")]
+    try:
+        for route in routes:
+            ipaddress.ip_network(route, strict=False)
+    except ValueError as exc:
+        raise WarpGenError("warp-gen LAN-exclusion list contains an invalid route") from exc
+    return ", ".join(routes)
+
+
+def load_identity(urls: list[str]) -> tuple[dict[str, str], str]:
+    fixture = os.environ.get("WARP_GENERATOR_DATA_FILE", "")
+    errors: list[str] = []
+    sources = ["fixture"] if fixture else urls
+    for number, source in enumerate(sources, 1):
+        label = source if source == "fixture" else urlsplit(source).netloc
+        log(f"Requesting a fresh identity bundle ({number}/{len(sources)}): {label}")
+        try:
+            raw = (
+                Path(fixture).read_bytes()
+                if source == "fixture"
+                else download(source, MAX_JSON_BYTES, accept="application/json")
+            )
+            if len(raw) > MAX_JSON_BYTES:
+                raise WarpGenError("identity response is too large")
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise WarpGenError("identity response is not an object")
+            required = ("privKey", "peer_pub", "client_ipv4", "client_ipv6")
+            if any(not isinstance(payload.get(key), str) for key in required):
+                raise WarpGenError("identity response misses required string fields")
+            key_pattern = re.compile(r"[A-Za-z0-9+/]{43}=")
+            if not key_pattern.fullmatch(payload["privKey"]) or not key_pattern.fullmatch(
+                payload["peer_pub"]
+            ):
+                raise WarpGenError("identity response contains an invalid key")
+            ipaddress.ip_address(payload["client_ipv4"].split("/", 1)[0])
+            ipaddress.ip_address(payload["client_ipv6"].split("/", 1)[0])
+            return {key: payload[key] for key in required}, label
+        except (OSError, UnicodeError, ValueError, urllib.error.URLError, WarpGenError) as exc:
+            errors.append(f"{label}: {exc}")
+            log(f"Identity source failed: {label} ({type(exc).__name__})")
+    raise WarpGenError("all warp-gen identity sources failed: " + "; ".join(errors))
+
+
+def choose_endpoint(
+    server: str, ports: list[int], prefixes: list[str], server_map: dict[str, str]
+) -> str:
+    available = list(ports)
+    if server == "ltePL":
+        available = [port for port in available if port != 988]
+    elif server == "lteFL":
+        available = [port for port in available if port != 1010]
+    port = secrets.choice(available)
+    if server == "def":
+        prefix = secrets.choice(prefixes)
+        host = prefix if not prefix.endswith(".") else f"{prefix}{secrets.randbelow(10) + 1}"
+    else:
+        try:
+            host = server_map[server]
+        except KeyError as exc:
+            raise WarpGenError(f"server preset {server!r} is not published by warp-gen") from exc
+    return f"{host}:{port}"
+
+
+def atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("Usage: generate-warp-config OUTPUT.conf", file=sys.stderr)
+        return 64
+    output = Path(sys.argv[1])
+    try:
+        site_url = https_url(
+            os.environ.get("WARP_GENERATOR_SITE_URL", "https://warp-gen.github.io"),
+            "WARP_GENERATOR_SITE_URL",
+        )
+        variant = int(os.environ.get("WARP_AWG_VARIANT", "1"))
+        if variant not in {1, 2, 3}:
+            raise WarpGenError("WARP_AWG_VARIANT must be 1, 2, or 3")
+        dns_id = os.environ.get("WARP_DNS_PRESET", "cf")
+        server = os.environ.get("WARP_SERVER_PRESET", "def")
+        ipv6 = env_bool("WARP_IPV6", True)
+        exclude_lan = env_bool("WARP_EXCLUDE_LAN", True)
+        keepalive = int(os.environ.get("WARP_KEEPALIVE", "0"))
+        if not 0 <= keepalive <= 65535:
+            raise WarpGenError("WARP_KEEPALIVE must be between 0 and 65535")
+
+        log(f"Generator site: {site_url}")
+        log(
+            f"Saved parameters: AWG variant={variant}, DNS={dns_id}, server={server}, "
+            f"IPv6={'on' if ipv6 else 'off'}, LAN exclusion={'on' if exclude_lan else 'off'}"
+        )
+        script = load_script(site_url)
+        data_urls = parse_data_urls(script)
+        ports = parse_ports(script)
+        prefixes, server_map = parse_endpoint_rules(script)
+        dns = parse_dns(script, dns_id)
+        i_lines = parse_i_lines(script, variant)
+        allowed_ips = (
+            parse_lan_exclusion(script)
+            if exclude_lan
+            else "0.0.0.0/0, ::/0" if ipv6 else "0.0.0.0/0"
+        )
+        identity, source = load_identity(data_urls)
+        endpoint = choose_endpoint(server, ports, prefixes, server_map)
+        if not ipv6:
+            dns = ", ".join(value for value in dns.split(", ") if ":" not in value)
+        address = identity["client_ipv4"]
+        if ipv6:
+            address += f", {identity['client_ipv6']}"
+
+        interface_lines = [
+            "[Interface]",
+            f"PrivateKey = {identity['privKey']}",
+            f"Address = {address}",
+            f"DNS = {dns}",
+            "MTU = 1280",
+            "S1 = 0",
+            "S2 = 0",
+            "S3 = 0",
+            "S4 = 0",
+            "Jc = 4",
+            "Jmin = 40",
+            "Jmax = 70",
+            "H1 = 1",
+            "H2 = 2",
+            "H3 = 3",
+            "H4 = 4",
+            *i_lines,
+            "",
+            "[Peer]",
+            f"PublicKey = {identity['peer_pub']}",
+            f"AllowedIPs = {allowed_ips}",
+            f"Endpoint = {endpoint}",
+        ]
+        if keepalive:
+            interface_lines.append(f"PersistentKeepalive = {keepalive}")
+        content = "\n".join(interface_lines) + "\n"
+        atomic_write(output, content)
+        log(f"Fresh identity received from {source}; secrets hidden")
+        log(f"Endpoint selected by current warp-gen rules: {endpoint}")
+        log(f"Complete candidate saved ({len(content.encode('utf-8'))} bytes)")
+        return 0
+    except (OSError, ValueError, urllib.error.URLError, WarpGenError) as exc:
+        log(f"Generation failed: {exc}")
+        return 70 if not isinstance(exc, WarpGenError) else 65
+
+
+if __name__ == "__main__":
+    sys.exit(main())

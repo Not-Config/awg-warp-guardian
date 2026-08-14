@@ -117,11 +117,16 @@ class Settings:
     backups_keep: int
     generator_path: Path
     generator_timeout: int
-    generator_api_url: str
+    generator_site_url: str
+    generator_data_urls: tuple[str, ...]
     generator_https_proxy: str
     exclude_lan: bool
-    endpoints: tuple[str, ...]
-    preserve_directives: tuple[str, ...]
+    awg_variant: int
+    dns_preset: str
+    server_preset: str
+    ipv6: bool
+    keepalive: int
+    candidate_attempts: int
     allow_hard_restart: bool
     state_dir: Path
     awg_command: str = "awg"
@@ -150,27 +155,24 @@ class Settings:
         quorum = env_int(values, "CHECK_QUORUM", min(2, len(urls)), 1)
         if quorum > len(urls):
             raise ValueError("CHECK_QUORUM cannot exceed the number of CHECK_URLS")
-        endpoints = tuple(
-            item.strip()
-            for item in values.get(
-                "WARP_ENDPOINTS",
-                (
-                    "162.159.192.1:2408,162.159.192.1:500,"
-                    "162.159.192.1:1701,162.159.192.1:4500"
-                ),
-            ).split(",")
-            if item.strip()
-        )
-        if not endpoints:
-            raise ValueError("WARP_ENDPOINTS must contain at least one endpoint")
-        preserve = tuple(
-            item.strip()
-            for item in values.get(
-                "PRESERVE_DIRECTIVES",
-                "Table,PreUp,PostUp,PreDown,PostDown",
-            ).split(",")
-            if item.strip()
-        )
+        data_urls = tuple(shlex.split(values.get("GENERATOR_DATA_URLS", "")))
+        for data_url in data_urls:
+            https_base_url(data_url, "GENERATOR_DATA_URLS")
+        awg_variant = env_int(values, "WARP_AWG_VARIANT", 1, 1)
+        if awg_variant > 3:
+            raise ValueError("WARP_AWG_VARIANT must be 1, 2, or 3")
+        dns_preset = values.get("WARP_DNS_PRESET", "cf")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", dns_preset):
+            raise ValueError("WARP_DNS_PRESET is invalid")
+        server_preset = values.get("WARP_SERVER_PRESET", "def")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", server_preset):
+            raise ValueError("WARP_SERVER_PRESET is invalid")
+        keepalive = env_int(values, "WARP_KEEPALIVE", 0, 0)
+        if keepalive > 65535:
+            raise ValueError("WARP_KEEPALIVE must be between 0 and 65535")
+        candidate_attempts = env_int(values, "CANDIDATE_ATTEMPTS", 10, 1)
+        if candidate_attempts > 20:
+            raise ValueError("CANDIDATE_ATTEMPTS must be between 1 and 20")
         return cls(
             interface=interface,
             config_path=config_path,
@@ -203,17 +205,22 @@ class Settings:
                 )
             ),
             generator_timeout=env_int(values, "GENERATOR_TIMEOUT", 90, 5),
-            generator_api_url=https_base_url(
+            generator_site_url=https_base_url(
                 values.get(
-                    "GENERATOR_API_URL",
-                    "https://api.cloudflareclient.com/v0i1909051800",
+                    "GENERATOR_SITE_URL",
+                    "https://warp-gen.github.io",
                 ),
-                "GENERATOR_API_URL",
+                "GENERATOR_SITE_URL",
             ),
+            generator_data_urls=data_urls,
             generator_https_proxy=values.get("GENERATOR_HTTPS_PROXY", ""),
             exclude_lan=env_bool(values, "EXCLUDE_LAN", True),
-            endpoints=endpoints,
-            preserve_directives=preserve,
+            awg_variant=awg_variant,
+            dns_preset=dns_preset,
+            server_preset=server_preset,
+            ipv6=env_bool(values, "WARP_IPV6", True),
+            keepalive=keepalive,
+            candidate_attempts=candidate_attempts,
             allow_hard_restart=env_bool(values, "ALLOW_HARD_RESTART", True),
             state_dir=Path(
                 values.get("STATE_DIR", "/var/lib/awg-warp-guardian")
@@ -244,7 +251,6 @@ class State:
     last_success: int = 0
     last_rotation_attempt: int = 0
     rotation_attempts: list[int] = field(default_factory=list)
-    endpoint_index: int = 0
     last_action: str = "never"
 
     @classmethod
@@ -258,7 +264,6 @@ class State:
                 last_success=int(raw.get("last_success", 0)),
                 last_rotation_attempt=int(raw.get("last_rotation_attempt", 0)),
                 rotation_attempts=[int(v) for v in raw.get("rotation_attempts", [])],
-                endpoint_index=int(raw.get("endpoint_index", 0)),
                 last_action=str(raw.get("last_action", "unknown")),
             )
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -319,56 +324,6 @@ def basic_validate_config(text: str) -> list[str]:
         "Endpoint": r"(?mi)^\s*Endpoint\s*=\s*\S+",
     }
     return [name for name, pattern in required.items() if not re.search(pattern, text)]
-
-
-def merge_interface_directives(
-    current: str, candidate: str, directive_names: Sequence[str]
-) -> str:
-    """Carry local routing hooks into a newly generated credential config."""
-    wanted = {name.lower() for name in directive_names}
-    if not wanted:
-        return candidate
-
-    def lines_in_interface(text: str) -> list[str]:
-        result: list[str] = []
-        in_interface = False
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
-                in_interface = stripped.lower() == "[interface]"
-                continue
-            if in_interface and "=" in line:
-                key = line.split("=", 1)[0].strip().lower()
-                managed_hook = re.search(
-                    r"/usr/local/sbin/awg-warp-(?:lan-rules|route-endpoint)\b",
-                    line,
-                )
-                if key in wanted and not managed_hook:
-                    result.append(line.rstrip())
-        return result
-
-    preserved = lines_in_interface(current)
-    if not preserved:
-        return candidate
-    output: list[str] = []
-    inserted = False
-    in_interface = False
-    for line in candidate.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            if in_interface and not inserted:
-                output.extend(preserved)
-                output.append("")
-                inserted = True
-            in_interface = stripped.lower() == "[interface]"
-        if in_interface and "=" in line:
-            key = line.split("=", 1)[0].strip().lower()
-            if key in wanted:
-                continue
-        output.append(line.rstrip())
-    if in_interface and not inserted:
-        output.extend(preserved)
-    return "\n".join(output).rstrip() + "\n"
 
 
 class Guardian:
@@ -663,30 +618,43 @@ class Guardian:
         )
         candidate = candidate_dir / f"{self.settings.interface}.conf"
         candidate.touch(mode=0o600)
-        endpoint = self.settings.endpoints[
-            state.endpoint_index % len(self.settings.endpoints)
-        ]
         environment = os.environ.copy()
-        environment["WARP_ENDPOINT"] = endpoint
-        environment["WARP_API_BASE_URL"] = self.settings.generator_api_url
+        environment["WARP_GENERATOR_SITE_URL"] = self.settings.generator_site_url
+        if self.settings.generator_data_urls:
+            environment["WARP_GENERATOR_DATA_URLS"] = " ".join(
+                self.settings.generator_data_urls
+            )
         environment["WARP_EXCLUDE_LAN"] = (
             "1" if self.settings.exclude_lan else "0"
         )
+        environment["WARP_AWG_VARIANT"] = str(self.settings.awg_variant)
+        environment["WARP_DNS_PRESET"] = self.settings.dns_preset
+        environment["WARP_SERVER_PRESET"] = self.settings.server_preset
+        environment["WARP_IPV6"] = "1" if self.settings.ipv6 else "0"
+        environment["WARP_KEEPALIVE"] = str(self.settings.keepalive)
         if self.settings.generator_https_proxy:
             environment["HTTPS_PROXY"] = self.settings.generator_https_proxy
             environment["https_proxy"] = self.settings.generator_https_proxy
+        else:
+            for proxy_key in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+                environment.pop(proxy_key, None)
         try:
-            LOG.info("Registration API: %s", self.settings.generator_api_url)
+            LOG.info("warp-gen source: %s", self.settings.generator_site_url)
             LOG.info(
-                "Registration transport: %s",
+                "Generator transport: %s",
                 "configured HTTP/HTTPS proxy"
                 if self.settings.generator_https_proxy
                 else "direct HTTPS connection",
             )
-            LOG.info("Candidate endpoint: %s", endpoint)
             LOG.info(
-                "LAN exclusion: %s",
-                "enabled" if self.settings.exclude_lan else "disabled",
+                "Saved generator parameters: variant=%s DNS=%s server=%s "
+                "IPv6=%s LAN-exclusion=%s keepalive=%s",
+                self.settings.awg_variant,
+                self.settings.dns_preset,
+                self.settings.server_preset,
+                "on" if self.settings.ipv6 else "off",
+                "on" if self.settings.exclude_lan else "off",
+                self.settings.keepalive or "off",
             )
             generated = self.runner.run(
                 [str(self.settings.generator_path), str(candidate)],
@@ -698,18 +666,8 @@ class Guardian:
                 if line.startswith("[generator] "):
                     LOG.info("%s", line)
             if generated.returncode != 0:
-                raise RuntimeError("WARP config generator failed")
-            if self.settings.config_path.exists():
-                merged = merge_interface_directives(
-                    self.settings.config_path.read_text(encoding="utf-8"),
-                    candidate.read_text(encoding="utf-8"),
-                    self.settings.preserve_directives,
-                )
-                atomic_write(candidate, merged, 0o600)
+                raise RuntimeError("warp-gen config request failed")
             self.validate_candidate(candidate)
-            state.endpoint_index = (state.endpoint_index + 1) % len(
-                self.settings.endpoints
-            )
             return candidate
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             shutil.rmtree(candidate_dir, ignore_errors=True)
@@ -722,6 +680,7 @@ class Guardian:
         state: State,
         force: bool = False,
         ignore_cooldown: bool = False,
+        record_rotation: bool = True,
     ) -> bool:
         allowed, reason = self.may_rotate(state, force, ignore_cooldown)
         if not allowed:
@@ -756,20 +715,18 @@ class Guardian:
                 return False
             stopped_for_generation = True
 
-        now = int(time.time())
-        state.last_rotation_attempt = now
-        state.rotation_attempts = [
-            value for value in state.rotation_attempts if value > now - 86400
-        ] + [now]
-        state.save(self.state_path)
-        LOG.warning("Generating a new WARP registration and config")
+        if record_rotation:
+            now = int(time.time())
+            state.last_rotation_attempt = now
+            state.rotation_attempts = [
+                value for value in state.rotation_attempts if value > now - 86400
+            ] + [now]
+            state.save(self.state_path)
+        LOG.warning("Requesting a fresh complete config with saved warp-gen parameters")
         try:
             candidate = self.generate_candidate(state)
         except (OSError, ValueError, RuntimeError) as exc:
             LOG.error("Could not generate a valid replacement config: %s", exc)
-            state.endpoint_index = (state.endpoint_index + 1) % len(
-                self.settings.endpoints
-            )
             if stopped_for_generation:
                 LOG.warning("Restarting the previous tunnel after generation failure")
                 self.hard_restart()
@@ -812,6 +769,14 @@ class Guardian:
                 os.chmod(current, 0o600)
                 self.hard_restart()
             else:
+                self.command_ok(
+                    [
+                        self.settings.systemctl_command,
+                        "stop",
+                        self.settings.service,
+                    ],
+                    timeout=45,
+                )
                 current.unlink(missing_ok=True)
             state.last_action = "rotation rolled back"
             return False
@@ -823,25 +788,24 @@ class Guardian:
                 pass
 
     def rotate(self, state: State, force: bool = False) -> bool:
-        attempts = max(1, len(self.settings.endpoints))
+        allowed, reason = self.may_rotate(state, force)
+        if not allowed:
+            LOG.error("Configuration rotation skipped: %s", reason)
+            state.last_action = f"rotation skipped: {reason}"
+            return False
+        attempts = self.settings.candidate_attempts
         for number in range(1, attempts + 1):
-            endpoint = self.settings.endpoints[
-                state.endpoint_index % len(self.settings.endpoints)
-            ]
             LOG.warning(
-                "WARP replacement attempt %s/%s using %s",
+                "Fresh warp-gen candidate attempt %s/%s",
                 number,
                 attempts,
-                endpoint,
             )
             if self.rotate_once(
                 state,
-                force=force,
-                ignore_cooldown=number > 1,
+                force=True,
+                record_rotation=number == 1,
             ):
                 return True
-            if state.last_action.startswith("rotation skipped:"):
-                break
         LOG.error("No replacement WARP configuration passed health checks")
         return False
 

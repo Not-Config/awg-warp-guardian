@@ -30,10 +30,10 @@ tui_valid_endpoint '[2606:4700:d0::a29f:c001]:2408'
 tui_valid_url 'https://example.org/health?source=tui&ok=1'
 ! tui_valid_url 'ftp://example.org/'
 ! tui_valid_url 'https://example.org/bad path'
-tui_valid_generator_api_url 'https://mirror.example/v0i1909051800'
-! tui_valid_generator_api_url 'http://mirror.example/v0i1909051800'
-! tui_valid_generator_api_url 'https://user:secret@mirror.example/api'
-! tui_valid_generator_api_url 'https://mirror.example:99999/api'
+tui_valid_generator_site_url 'https://mirror.example/warp-gen'
+! tui_valid_generator_site_url 'http://mirror.example/warp-gen'
+! tui_valid_generator_site_url 'https://user:secret@mirror.example/warp-gen'
+! tui_valid_generator_site_url 'https://mirror.example:99999/warp-gen'
 tui_valid_generator_proxy 'http://127.0.0.1:8080'
 ! tui_valid_generator_proxy 'http://127.0.0.1:99999'
 ! tui_valid_generator_proxy 'socks5://127.0.0.1:1080'
@@ -56,7 +56,12 @@ tui_dialog() {
     *"Частота проверки"*) printf '5min\n' ;;
     *"Попытки получения профиля"*) printf '10\n' ;;
     *"Доступ к локальной сети"*) printf 'exclude\n' ;;
-    *"Источник генерации"*) printf 'official\n' ;;
+    *"Вариант AWG"*) printf '1\n' ;;
+    *"DNS из warp-gen"*) printf 'cf\n' ;;
+    *"Сервер из warp-gen"*) printf 'def\n' ;;
+    *"IPv6"*) printf 'yes\n' ;;
+    *"PersistentKeepalive"*) printf 'off\n' ;;
+    *"Источник генерации"*) printf 'default\n' ;;
     *--radiolist*) printf 'majority\n' ;;
     *) return 1 ;;
   esac
@@ -74,8 +79,14 @@ tui_select_interval
 assert_equal 5min "${check_interval}"
 tui_select_lan_mode
 assert_equal 1 "${exclude_lan}"
+tui_select_warp_parameters
+assert_equal 1 "${awg_variant}"
+assert_equal cf "${dns_preset}"
+assert_equal def "${server_preset}"
+assert_equal 1 "${warp_ipv6}"
+assert_equal 0 "${warp_keepalive}"
 tui_select_generator_source
-assert_equal 'https://api.cloudflareclient.com/v0i1909051800' "${generator_api_url}"
+assert_equal 'https://warp-gen.github.io' "${generator_site_url}"
 assert_equal '' "${generator_https_proxy}"
 tui_select_initial_attempts
 assert_equal 10 "${initial_generation_attempts}"
