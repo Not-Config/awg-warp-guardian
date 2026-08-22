@@ -594,17 +594,57 @@ class Guardian:
             return None
         self.backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = self.backup_dir / f"{self.settings.interface}-{stamp}.conf"
-        shutil.copy2(self.settings.config_path, backup)
-        os.chmod(backup, 0o600)
-        backups = sorted(
-            self.backup_dir.glob(f"{self.settings.interface}-*.conf"),
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
+        descriptor, backup_name = tempfile.mkstemp(
+            prefix=f"{self.settings.interface}-{stamp}-",
+            suffix=".conf",
+            dir=self.backup_dir,
         )
-        for old in backups[self.settings.backups_keep :]:
-            old.unlink(missing_ok=True)
-        return backup
+        os.close(descriptor)
+        backup = Path(backup_name)
+        try:
+            # copy2() preserves the source mtime. That made a newly created
+            # backup look old enough to be deleted by retention immediately.
+            shutil.copyfile(self.settings.config_path, backup)
+            os.chmod(backup, 0o600)
+            os.utime(backup, None)
+            other_backups = sorted(
+                (
+                    item
+                    for item in self.backup_dir.glob(
+                        f"{self.settings.interface}-*.conf"
+                    )
+                    if item != backup
+                ),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
+            keep_other = max(0, self.settings.backups_keep - 1)
+            for old in other_backups[keep_other:]:
+                old.unlink(missing_ok=True)
+            return backup
+        except OSError:
+            backup.unlink(missing_ok=True)
+            raise
+
+    def restore_config(self, content: bytes) -> None:
+        current = self.settings.config_path
+        current.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{current.name}.rollback.",
+            dir=current.parent,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, current)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
     def may_rotate(
         self,
@@ -750,8 +790,16 @@ class Guardian:
             state.last_action = "rotation generation failed"
             return False
 
-        backup = self.backup_current()
         current = self.settings.config_path
+        try:
+            previous_config = current.read_bytes() if current.exists() else None
+            self.backup_current()
+        except OSError as exc:
+            LOG.error("Could not preserve the current config before rotation: %s", exc)
+            if stopped_for_generation:
+                self.hard_restart()
+            state.last_action = "rotation could not create rollback"
+            return False
         try:
             if (
                 not stopped_for_generation
@@ -781,9 +829,8 @@ class Guardian:
                     LOG.info("New config passed health checks after service restart")
                     return True
             LOG.error("Replacement config failed; rolling back")
-            if backup is not None:
-                shutil.copy2(backup, current)
-                os.chmod(current, 0o600)
+            if previous_config is not None:
+                self.restore_config(previous_config)
                 self.hard_restart()
             else:
                 self.command_ok(
