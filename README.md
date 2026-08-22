@@ -20,14 +20,14 @@ curl -fsSL https://raw.githubusercontent.com/Not-Config/awg-warp-guardian/main/b
 зависимости от типа SSH-терминала:
 
 - новый профиль с warp-gen или существующий `.conf`;
-- вариант AWG 2.0: 1, 2 или 3;
+- вариант AWG 2.0: 1, 2, 3 или случайный при каждой попытке;
 - DNS и сервер из списка warp-gen;
 - IPv6 и `PersistentKeepalive`;
 - «Исключить LAN»;
 - сайты, которые обязаны открываться через VPN;
 - кворум успешных сайтов;
 - частоту проверки;
-- число свежих кандидатов: от 1 до 20;
+- число свежих кандидатов: от 1 до 20 или без ограничения — до успеха;
 - основной сайт warp-gen, совместимое зеркало или прокси.
 
 Для повторного открытия меню:
@@ -65,6 +65,10 @@ JavaScript:
 Каждая попытка запускает генератор заново, поэтому браузерный `sessionCache` со
 страницы между попытками не переносится: выполняется новый сетевой запрос и
 получается новый комплект конфигурации.
+
+В режиме `random` перед каждой попыткой независимо выбирается AWG-вариант 1, 2
+или 3. В режиме `infinite` цикл не завершается по счётчику и останавливается
+только после установки рабочего профиля либо ручной остановки сервиса.
 
 Guardian не подставляет собственный `Endpoint`, не заменяет `AllowedIPs` и не
 переносит строки из старого конфига. Каждый кандидат формируется целиком по
@@ -121,6 +125,7 @@ sudo journalctl -u awg-quick@awg-warp.service -n 100 --no-pager
 В журнале видны:
 
 - номер попытки;
+- фактически выбранный AWG-вариант;
 - адрес выбранного сайта-источника;
 - с какого API генератора скачивается новый комплект конфигурации;
 - выбранный правилами warp-gen endpoint;
@@ -156,6 +161,8 @@ sudo ./install.sh --no-tui --reconfigure \
 --include-lan
 --no-ipv6
 --no-start
+--awg-variant random
+--initial-attempts infinite
 ```
 
 `--generator-data` можно повторить: адреса будут использоваться как fallback.
@@ -174,12 +181,12 @@ SERVICE=awg-quick@awg-warp.service
 CHECK_URLS="https://github.com/ https://telegram.org/ https://www.cloudflare.com/cdn-cgi/trace"
 CHECK_QUORUM=2
 CHECK_INTERVAL=2min
-CANDIDATE_ATTEMPTS=10
+CANDIDATE_ATTEMPTS=infinite
 
 GENERATOR_SITE_URL=https://warp-gen.github.io
 GENERATOR_DATA_URLS=
 GENERATOR_HTTPS_PROXY=
-WARP_AWG_VARIANT=1
+WARP_AWG_VARIANT=random
 WARP_DNS_PRESET=cf
 WARP_SERVER_PRESET=def
 WARP_IPV6=1
