@@ -112,6 +112,11 @@ from pathlib import Path
 namespace = runpy.run_path(
     str(Path(os.environ["PROJECT_DIR"]) / "src" / "generate-warp-config")
 )
+assert namespace["select_awg_variant"]("1", lambda _variants: 3) == (1, False)
+assert namespace["select_awg_variant"]("random", lambda variants: variants[1]) == (
+    2,
+    True,
+)
 captured = []
 
 
