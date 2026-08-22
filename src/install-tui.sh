@@ -546,7 +546,7 @@ tui_select_initial_attempts() {
   local attempts_choice custom_attempts
 
   if ! attempts_choice=$(tui_dialog --title "Попытки получения профиля" \
-    --radiolist "Сколько разных регистраций запросить, если конфигурации не проходят проверку?" \
+    --radiolist "Сколько новых конфигураций запросить у warp-gen, если предыдущие не проходят проверку?" \
     17 92 5 \
     5 "До 5 попыток" OFF \
     10 "До 10 попыток (рекомендуется)" ON \
@@ -731,7 +731,7 @@ tui_confirm_install() {
   if [[ -n ${config_path} && -s ${config_path} ]]; then
     attempts_summary="существующий профиль не перевыпускается при установке"
   else
-    attempts_summary="до ${initial_generation_attempts} новых регистраций"
+    attempts_summary="до ${initial_generation_attempts} новых конфигураций с warp-gen"
   fi
   if [[ ${exclude_lan} == 1 ]]; then
     lan_summary="исключён из VPN (рекомендуется)"
