@@ -49,39 +49,6 @@ cat >"${TEST_DIR}/identity.json" <<'EOF'
 }
 EOF
 
-cat >"${TEST_DIR}/registration.json" <<'EOF'
-{
-  "result": {
-    "config": {
-      "peers": [
-        {"public_key": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="}
-      ],
-      "interface": {
-        "addresses": {
-          "v4": "172.16.0.2/32",
-          "v6": "2606:4700:110:8bc6::2/128"
-        }
-      }
-    }
-  }
-}
-EOF
-
-cat >"${TEST_DIR}/fake-wg" <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-case "${1:-}" in
-  genkey) printf '%s\n' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' ;;
-  pubkey)
-    read -r private_key
-    [[ ${private_key} == AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= ]]
-    printf '%s\n' 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC='
-    ;;
-  *) exit 64 ;;
-esac
-EOF
-chmod +x "${TEST_DIR}/fake-wg"
-
 assert_rejected_site() {
   local site_url=$1
   local status
@@ -115,7 +82,7 @@ WARP_EXCLUDE_LAN=1 \
   >"${TEST_DIR}/stdout.log" 2>"${TEST_DIR}/progress.log"
 
 grep -Fq '[generator] Generator site: https://warp-gen.example' "${TEST_DIR}/progress.log"
-grep -Fq '[generator] Requesting a fresh identity bundle (1/1): fixture' "${TEST_DIR}/progress.log"
+grep -Fq '[generator] Requesting a fresh warp-gen config bundle (1/1): fixture' "${TEST_DIR}/progress.log"
 grep -Eq '\[generator\] Endpoint selected by current warp-gen rules: 162\.159\.192\.([1-9]|10):500' "${TEST_DIR}/progress.log"
 if grep -Fq 'AAAAAAAAAAAAAAAA' "${TEST_DIR}/progress.log"; then
   echo "generator progress leaked a private key" >&2
@@ -137,32 +104,51 @@ if grep -Eq 'PreUp|PostDown|awg-warp-route-endpoint' "${TEST_DIR}/generated.conf
 fi
 [[ $(stat -c %a "${TEST_DIR}/generated.conf") == 600 ]]
 
-WARP_GENERATOR_SITE_URL=https://warp-gen.example \
-WARP_GENERATOR_SCRIPT_FILE="${TEST_DIR}/script.js" \
-WARP_REGISTRATION_FILE="${TEST_DIR}/registration.json" \
-WARP_KEY_COMMAND="${TEST_DIR}/fake-wg" \
-WARP_AWG_VARIANT=1 \
-WARP_DNS_PRESET=cf \
-WARP_SERVER_PRESET=NL \
-WARP_IPV6=1 \
-WARP_KEEPALIVE=0 \
-WARP_EXCLUDE_LAN=1 \
-  "${PROJECT_DIR}/src/generate-warp-config" "${TEST_DIR}/locally-registered.conf" \
-  >"${TEST_DIR}/local.stdout.log" 2>"${TEST_DIR}/local.progress.log"
+PROJECT_DIR="${PROJECT_DIR}" python3 - <<'PY'
+import os
+import runpy
+from pathlib import Path
 
-grep -Fq '[generator] Fresh identity received from registration fixture; secrets hidden' \
-  "${TEST_DIR}/local.progress.log"
-grep -Fq 'PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
-  "${TEST_DIR}/locally-registered.conf"
-grep -Fq 'PublicKey = BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=' \
-  "${TEST_DIR}/locally-registered.conf"
-grep -Fq 'Address = 172.16.0.2/32, 2606:4700:110:8bc6::2/128' \
-  "${TEST_DIR}/locally-registered.conf"
-grep -Fq 'Endpoint = nl.example.test:500' "${TEST_DIR}/locally-registered.conf"
-if grep -Fq 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=' \
-  "${TEST_DIR}/local.progress.log"; then
-  echo "generator progress leaked a locally generated public key" >&2
-  exit 1
-fi
+namespace = runpy.run_path(
+    str(Path(os.environ["PROJECT_DIR"]) / "src" / "generate-warp-config")
+)
+captured = []
+
+
+class Response:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, _limit):
+        return b"{}"
+
+
+def fake_urlopen(request, timeout):
+    captured.append((request, timeout))
+    return Response()
+
+
+namespace["urllib"].request.urlopen = fake_urlopen
+namespace["download"](
+    "https://data.example.test/identity",
+    1024,
+    accept="application/json",
+    extra_headers={
+        "X-Client": "WARP",
+        "Origin": "https://warp-gen.example",
+        "Referer": "https://warp-gen.example/",
+    },
+)
+request, timeout = captured[0]
+headers = {name.lower(): value for name, value in request.header_items()}
+assert headers["x-client"] == "WARP"
+assert headers["origin"] == "https://warp-gen.example"
+assert headers["referer"] == "https://warp-gen.example/"
+assert headers["cache-control"] == "no-cache"
+assert timeout == 12
+PY
 
 echo "Generator wrapper tests passed"
