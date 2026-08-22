@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -185,6 +186,29 @@ class GeneratorTests(unittest.TestCase):
             self.assertNotIn("MUST_NOT_BE_LOGGED", output)
 
 
+class BackupTests(unittest.TestCase):
+    def test_new_backup_is_not_pruned_when_source_has_an_old_mtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = make_settings(directory)
+            settings.config_path.write_text(VALID_CONFIG, encoding="utf-8")
+            os.utime(settings.config_path, (1, 1))
+            instance = guardian.Guardian(settings)
+            instance.backup_dir.mkdir(parents=True)
+            for index in range(settings.backups_keep):
+                old = instance.backup_dir / f"awg-test-20260822T00000{index}Z.conf"
+                old.write_text(f"old-{index}", encoding="utf-8")
+
+            backup = instance.backup_current()
+
+            self.assertIsNotNone(backup)
+            self.assertTrue(backup.exists())
+            self.assertEqual(backup.read_text(encoding="utf-8"), VALID_CONFIG)
+            self.assertEqual(
+                len(list(instance.backup_dir.glob("awg-test-*.conf"))),
+                settings.backups_keep,
+            )
+
+
 class ParallelHealthRunner:
     def __init__(self):
         self.active_curls = 0
@@ -305,6 +329,27 @@ class RotationTests(unittest.TestCase):
             self.assertEqual(instance.generated, 2)
             self.assertEqual(instance.events[:2], ["stop", "fresh:1"])
             self.assertIn("random-2.example", settings.config_path.read_text(encoding="utf-8"))
+
+    def test_failed_candidate_rolls_back_from_memory_not_retained_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(make_settings(directory), candidate_attempts=1)
+            settings.config_path.write_text(VALID_CONFIG, encoding="utf-8")
+            instance = RotationGuardian(settings, [False])
+
+            original_backup = instance.backup_current
+
+            def disappearing_backup():
+                backup = original_backup()
+                assert backup is not None
+                backup.unlink()
+                return backup
+
+            instance.backup_current = disappearing_backup
+
+            self.assertFalse(instance.rotate(guardian.State(), force=True))
+            self.assertEqual(
+                settings.config_path.read_text(encoding="utf-8"), VALID_CONFIG
+            )
 
 
 if __name__ == "__main__":
