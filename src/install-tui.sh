@@ -547,10 +547,11 @@ tui_select_initial_attempts() {
 
   if ! attempts_choice=$(tui_dialog --title "Попытки получения профиля" \
     --radiolist "Сколько новых конфигураций запросить у warp-gen, если предыдущие не проходят проверку?" \
-    17 92 5 \
+    18 92 6 \
     5 "До 5 попыток" OFF \
     10 "До 10 попыток (рекомендуется)" ON \
     20 "До 20 попыток" OFF \
+    infinite "До победного — без ограничения количества" OFF \
     custom "Указать количество" OFF); then
     return 130
   fi
@@ -598,10 +599,11 @@ tui_select_warp_parameters() {
 
   awg_variant=$(tui_dialog --title "Вариант AWG" \
     --radiolist "Какой вариант AWG 2.0 с warp-gen использовать?" \
-    15 82 4 \
+    16 88 5 \
     1 "Вариант 1 (рекомендуется)" ON \
     2 "Вариант 2" OFF \
-    3 "Вариант 3" OFF) || return 130
+    3 "Вариант 3" OFF \
+    random "Случайный вариант 1/2/3 при каждой попытке" OFF) || return 130
 
   dns_preset=$(tui_dialog --title "DNS из warp-gen" \
     --radiolist "Какой DNS подставлять при каждой новой попытке?" \
@@ -730,6 +732,8 @@ tui_confirm_install() {
   done
   if [[ -n ${config_path} && -s ${config_path} ]]; then
     attempts_summary="существующий профиль не перевыпускается при установке"
+  elif [[ ${initial_generation_attempts} == infinite ]]; then
+    attempts_summary="без ограничения — до первого рабочего профиля"
   else
     attempts_summary="до ${initial_generation_attempts} новых конфигураций с warp-gen"
   fi
