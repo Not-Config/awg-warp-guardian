@@ -48,12 +48,12 @@ Options:
   --check-url URL        Replace defaults; repeat to add multiple URLs
   --quorum NUMBER        Required successful site checks (default: 2)
   --check-interval TIME  Timer interval: 30s, 1min, 2min, 1h (default: 2min)
-  --initial-attempts N   New-profile attempts: 1-20 (default: 10)
+  --initial-attempts N   New-profile attempts: 1-20 or infinite (default: 10)
   --exclude-lan          Keep private/local networks outside VPN (default)
   --include-lan          Route private networks through VPN
   --generator-site URL   warp-gen site or compatible mirror
   --generator-data URL   Override warp-gen config API; repeat for fallbacks
-  --awg-variant N        AWG 2.0 variant published by warp-gen: 1, 2, or 3
+  --awg-variant N        AWG 2.0 variant: 1, 2, 3, or random each attempt
   --dns-preset NAME      warp-gen DNS preset (default: cf)
   --server-preset NAME   warp-gen server preset (default: def)
   --ipv6 / --no-ipv6     Include or omit IPv6 in the generated profile
@@ -388,10 +388,12 @@ if ((interval_seconds < 30)); then
   echo "--check-interval cannot be shorter than 30 seconds" >&2
   exit 65
 fi
-if [[ ! ${initial_generation_attempts} =~ ^[1-9][0-9]*$ ]] || \
-  ((initial_generation_attempts > 20)); then
-  echo "--initial-attempts must be an integer between 1 and 20" >&2
-  exit 65
+if [[ ${initial_generation_attempts} != infinite ]]; then
+  if [[ ! ${initial_generation_attempts} =~ ^[1-9][0-9]*$ ]] || \
+    ((initial_generation_attempts > 20)); then
+    echo "--initial-attempts must be 1-20 or infinite" >&2
+    exit 65
+  fi
 fi
 if [[ ${exclude_lan} != 0 && ${exclude_lan} != 1 ]]; then
   echo "LAN routing mode must be 0 (include) or 1 (exclude)" >&2
@@ -409,8 +411,8 @@ for generator_data_url in "${generator_data_array[@]}"; do
     exit 65
   fi
 done
-if [[ ! ${awg_variant} =~ ^[123]$ ]]; then
-  echo "--awg-variant must be 1, 2, or 3" >&2
+if [[ ! ${awg_variant} =~ ^(1|2|3|random)$ ]]; then
+  echo "--awg-variant must be 1, 2, 3, or random" >&2
   exit 65
 fi
 if [[ ! ${dns_preset} =~ ^[A-Za-z0-9_-]{1,32}$ || ! ${server_preset} =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
@@ -652,7 +654,11 @@ fi
 
 if ((installation_healthy == 0)); then
   echo
-  echo "[installer] The service will now request and test up to ${initial_generation_attempts} fresh warp-gen profiles."
+  if [[ ${initial_generation_attempts} == infinite ]]; then
+    echo "[installer] The service will request and test fresh warp-gen profiles until one works."
+  else
+    echo "[installer] The service will now request and test up to ${initial_generation_attempts} fresh warp-gen profiles."
+  fi
   echo "[installer] Every attempt is visible below; private keys remain hidden."
   if /usr/local/sbin/awg-warp-guardian rotate --force; then
     installation_healthy=1
