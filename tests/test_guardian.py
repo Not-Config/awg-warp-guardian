@@ -101,6 +101,19 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(settings.ipv6)
             self.assertEqual(settings.candidate_attempts, 20)
 
+    def test_settings_accept_random_variant_and_infinite_attempts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "guardian.env"
+            config.write_text(
+                "CHECK_URLS=https://one.test\n"
+                "WARP_AWG_VARIANT=random\n"
+                "CANDIDATE_ATTEMPTS=infinite\n",
+                encoding="utf-8",
+            )
+            settings = guardian.Settings.from_file(config)
+            self.assertEqual(settings.awg_variant, "random")
+            self.assertEqual(settings.candidate_attempts, 0)
+
     def test_settings_reject_bad_source_and_attempt_count(self):
         for line, message in (
             ("GENERATOR_SITE_URL=http://unsafe.example", "GENERATOR_SITE_URL"),
@@ -349,6 +362,19 @@ class RotationTests(unittest.TestCase):
             self.assertFalse(instance.rotate(guardian.State(), force=True))
             self.assertEqual(
                 settings.config_path.read_text(encoding="utf-8"), VALID_CONFIG
+            )
+
+    def test_infinite_mode_keeps_trying_until_a_candidate_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(make_settings(directory), candidate_attempts=0)
+            settings.config_path.write_text(VALID_CONFIG, encoding="utf-8")
+            instance = RotationGuardian(settings, [False, False, False, True])
+
+            self.assertTrue(instance.rotate(guardian.State(), force=True))
+            self.assertEqual(instance.generated, 4)
+            self.assertIn(
+                "random-4.example",
+                settings.config_path.read_text(encoding="utf-8"),
             )
 
 
