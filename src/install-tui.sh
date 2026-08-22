@@ -401,6 +401,7 @@ tui_select_profile() {
       fi
       ;;
     new)
+      force_new_profile=1
       while true; do
         if ! interface=$(tui_dialog --title "Новый WARP-профиль" \
           --inputbox "Имя сетевого интерфейса (до 15 символов):" \
