@@ -37,6 +37,19 @@ def env_bool(name: str, default: bool) -> bool:
     raise WarpGenError(f"{name} must be 0 or 1")
 
 
+def select_awg_variant(value: str, chooser=secrets.choice) -> tuple[int, bool]:
+    normalized = value.strip().lower()
+    if normalized == "random":
+        return chooser((1, 2, 3)), True
+    try:
+        variant = int(normalized)
+    except ValueError as exc:
+        raise WarpGenError("WARP_AWG_VARIANT must be 1, 2, 3, or random") from exc
+    if variant not in {1, 2, 3}:
+        raise WarpGenError("WARP_AWG_VARIANT must be 1, 2, 3, or random")
+    return variant, False
+
+
 def https_url(value: str, name: str) -> str:
     value = value.rstrip("/")
     parsed = urlsplit(value)
@@ -312,9 +325,9 @@ def main() -> int:
             os.environ.get("WARP_GENERATOR_SITE_URL", "https://warp-gen.github.io"),
             "WARP_GENERATOR_SITE_URL",
         )
-        variant = int(os.environ.get("WARP_AWG_VARIANT", "1"))
-        if variant not in {1, 2, 3}:
-            raise WarpGenError("WARP_AWG_VARIANT must be 1, 2, or 3")
+        variant, random_variant = select_awg_variant(
+            os.environ.get("WARP_AWG_VARIANT", "1")
+        )
         dns_id = os.environ.get("WARP_DNS_PRESET", "cf")
         server = os.environ.get("WARP_SERVER_PRESET", "def")
         ipv6 = env_bool("WARP_IPV6", True)
@@ -325,7 +338,9 @@ def main() -> int:
 
         log(f"Generator site: {site_url}")
         log(
-            f"Saved parameters: AWG variant={variant}, DNS={dns_id}, server={server}, "
+            "Saved parameters: AWG variant="
+            f"{'random -> ' if random_variant else ''}{variant}, "
+            f"DNS={dns_id}, server={server}, "
             f"IPv6={'on' if ipv6 else 'off'}, LAN exclusion={'on' if exclude_lan else 'off'}"
         )
         script = load_script(site_url)
