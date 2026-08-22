@@ -49,6 +49,39 @@ cat >"${TEST_DIR}/identity.json" <<'EOF'
 }
 EOF
 
+cat >"${TEST_DIR}/registration.json" <<'EOF'
+{
+  "result": {
+    "config": {
+      "peers": [
+        {"public_key": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="}
+      ],
+      "interface": {
+        "addresses": {
+          "v4": "172.16.0.2/32",
+          "v6": "2606:4700:110:8bc6::2/128"
+        }
+      }
+    }
+  }
+}
+EOF
+
+cat >"${TEST_DIR}/fake-wg" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "${1:-}" in
+  genkey) printf '%s\n' 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' ;;
+  pubkey)
+    read -r private_key
+    [[ ${private_key} == AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= ]]
+    printf '%s\n' 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC='
+    ;;
+  *) exit 64 ;;
+esac
+EOF
+chmod +x "${TEST_DIR}/fake-wg"
+
 assert_rejected_site() {
   local site_url=$1
   local status
@@ -103,5 +136,33 @@ if grep -Eq 'PreUp|PostDown|awg-warp-route-endpoint' "${TEST_DIR}/generated.conf
   exit 1
 fi
 [[ $(stat -c %a "${TEST_DIR}/generated.conf") == 600 ]]
+
+WARP_GENERATOR_SITE_URL=https://warp-gen.example \
+WARP_GENERATOR_SCRIPT_FILE="${TEST_DIR}/script.js" \
+WARP_REGISTRATION_FILE="${TEST_DIR}/registration.json" \
+WARP_KEY_COMMAND="${TEST_DIR}/fake-wg" \
+WARP_AWG_VARIANT=1 \
+WARP_DNS_PRESET=cf \
+WARP_SERVER_PRESET=NL \
+WARP_IPV6=1 \
+WARP_KEEPALIVE=0 \
+WARP_EXCLUDE_LAN=1 \
+  "${PROJECT_DIR}/src/generate-warp-config" "${TEST_DIR}/locally-registered.conf" \
+  >"${TEST_DIR}/local.stdout.log" 2>"${TEST_DIR}/local.progress.log"
+
+grep -Fq '[generator] Fresh identity received from registration fixture; secrets hidden' \
+  "${TEST_DIR}/local.progress.log"
+grep -Fq 'PrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
+  "${TEST_DIR}/locally-registered.conf"
+grep -Fq 'PublicKey = BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=' \
+  "${TEST_DIR}/locally-registered.conf"
+grep -Fq 'Address = 172.16.0.2/32, 2606:4700:110:8bc6::2/128' \
+  "${TEST_DIR}/locally-registered.conf"
+grep -Fq 'Endpoint = nl.example.test:500' "${TEST_DIR}/locally-registered.conf"
+if grep -Fq 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=' \
+  "${TEST_DIR}/local.progress.log"; then
+  echo "generator progress leaked a locally generated public key" >&2
+  exit 1
+fi
 
 echo "Generator wrapper tests passed"
