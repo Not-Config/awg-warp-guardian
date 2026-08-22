@@ -33,6 +33,7 @@ generator_proxy_option_set=0
 warp_parameters_option_set=0
 tui_mode=auto
 configuration_args_seen=0
+force_new_profile=0
 
 usage() {
   cat <<'EOF'
@@ -626,7 +627,7 @@ if ((no_start == 1)); then
 fi
 
 installation_healthy=0
-if [[ -s ${config_path} ]]; then
+if [[ -s ${config_path} && ${force_new_profile} -eq 0 ]]; then
   chmod 600 "${config_path}"
   echo "[installer] Checking the existing AWG profile before any replacement."
   if ! awg-quick strip "${config_path}" >/dev/null; then
@@ -643,6 +644,10 @@ if [[ -s ${config_path} ]]; then
       installation_healthy=1
     fi
   fi
+fi
+
+if ((force_new_profile == 1)); then
+  echo "[installer] A fresh profile was requested; the existing VPN will only be used as rollback."
 fi
 
 if ((installation_healthy == 0)); then
