@@ -21,4 +21,5 @@ ProtectControlGroups=true
 LockPersonality=true
 RestrictRealtime=true
 SystemCallArchitectures=native
-TimeoutStartSec=30min
+# An installation may explicitly choose unlimited candidate attempts.
+TimeoutStartSec=infinity
