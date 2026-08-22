@@ -52,14 +52,14 @@ Options:
   --exclude-lan          Keep private/local networks outside VPN (default)
   --include-lan          Route private networks through VPN
   --generator-site URL   warp-gen site or compatible mirror
-  --generator-data URL   Override identity API; repeat for fallbacks
+  --generator-data URL   Override warp-gen config API; repeat for fallbacks
   --awg-variant N        AWG 2.0 variant published by warp-gen: 1, 2, or 3
   --dns-preset NAME      warp-gen DNS preset (default: cf)
   --server-preset NAME   warp-gen server preset (default: def)
   --ipv6 / --no-ipv6     Include or omit IPv6 in the generated profile
   --keepalive SECONDS    PersistentKeepalive; 0 disables it (default: 0)
   --generator-proxy URL  HTTP/HTTPS proxy used only to reach warp-gen
-  --no-generator-proxy   Clear a previously configured registration proxy
+  --no-generator-proxy   Clear a previously configured generator proxy
   --tui                  Force the interactive installer
   --no-tui               Disable the interactive installer
   --skip-package-install Do not use apt or add the Amnezia PPA
@@ -647,7 +647,7 @@ if [[ -s ${config_path} && ${force_new_profile} -eq 0 ]]; then
 fi
 
 if ((force_new_profile == 1)); then
-  echo "[installer] A fresh profile was requested; the existing VPN will only be used as rollback."
+  echo "[installer] A fresh warp-gen profile was requested; the existing VPN is rollback only."
 fi
 
 if ((installation_healthy == 0)); then
