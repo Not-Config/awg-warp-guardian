@@ -716,8 +716,8 @@ class Guardian:
         stopped_for_generation = False
         if service_was_active and self.settings.allow_hard_restart:
             LOG.warning(
-                "Stopping the unhealthy tunnel before WARP registration so the "
-                "API uses the physical connection"
+                "Stopping the unhealthy tunnel before requesting a fresh "
+                "warp-gen profile so the generator uses the physical connection"
             )
             if not self.command_ok(
                 [
@@ -727,7 +727,7 @@ class Guardian:
                 ],
                 timeout=45,
             ):
-                LOG.error("Could not stop the tunnel before WARP registration")
+                LOG.error("Could not stop the tunnel before the warp-gen request")
                 state.last_action = "rotation could not stop tunnel"
                 return False
             stopped_for_generation = True
