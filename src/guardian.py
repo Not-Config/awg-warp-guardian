@@ -121,7 +121,7 @@ class Settings:
     generator_data_urls: tuple[str, ...]
     generator_https_proxy: str
     exclude_lan: bool
-    awg_variant: int
+    awg_variant: int | str
     dns_preset: str
     server_preset: str
     ipv6: bool
@@ -158,9 +158,18 @@ class Settings:
         data_urls = tuple(shlex.split(values.get("GENERATOR_DATA_URLS", "")))
         for data_url in data_urls:
             https_base_url(data_url, "GENERATOR_DATA_URLS")
-        awg_variant = env_int(values, "WARP_AWG_VARIANT", 1, 1)
-        if awg_variant > 3:
-            raise ValueError("WARP_AWG_VARIANT must be 1, 2, or 3")
+        awg_variant_value = values.get("WARP_AWG_VARIANT", "1").strip().lower()
+        if awg_variant_value == "random":
+            awg_variant: int | str = "random"
+        else:
+            try:
+                awg_variant = int(awg_variant_value)
+            except ValueError as exc:
+                raise ValueError(
+                    "WARP_AWG_VARIANT must be 1, 2, 3, or random"
+                ) from exc
+            if awg_variant not in {1, 2, 3}:
+                raise ValueError("WARP_AWG_VARIANT must be 1, 2, 3, or random")
         dns_preset = values.get("WARP_DNS_PRESET", "cf")
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", dns_preset):
             raise ValueError("WARP_DNS_PRESET is invalid")
@@ -170,9 +179,18 @@ class Settings:
         keepalive = env_int(values, "WARP_KEEPALIVE", 0, 0)
         if keepalive > 65535:
             raise ValueError("WARP_KEEPALIVE must be between 0 and 65535")
-        candidate_attempts = env_int(values, "CANDIDATE_ATTEMPTS", 10, 1)
-        if candidate_attempts > 20:
-            raise ValueError("CANDIDATE_ATTEMPTS must be between 1 and 20")
+        attempts_value = values.get("CANDIDATE_ATTEMPTS", "10").strip().lower()
+        if attempts_value == "infinite":
+            candidate_attempts = 0
+        else:
+            try:
+                candidate_attempts = int(attempts_value)
+            except ValueError as exc:
+                raise ValueError(
+                    "CANDIDATE_ATTEMPTS must be 1-20 or infinite"
+                ) from exc
+            if not 1 <= candidate_attempts <= 20:
+                raise ValueError("CANDIDATE_ATTEMPTS must be 1-20 or infinite")
         return cls(
             interface=interface,
             config_path=config_path,
@@ -858,11 +876,12 @@ class Guardian:
             state.last_action = f"rotation skipped: {reason}"
             return False
         attempts = self.settings.candidate_attempts
-        for number in range(1, attempts + 1):
+        number = 1
+        while attempts == 0 or number <= attempts:
             LOG.warning(
                 "Fresh warp-gen candidate attempt %s/%s",
                 number,
-                attempts,
+                "∞" if attempts == 0 else attempts,
             )
             if self.rotate_once(
                 state,
@@ -870,6 +889,7 @@ class Guardian:
                 record_rotation=number == 1,
             ):
                 return True
+            number += 1
         LOG.error("No replacement WARP configuration passed health checks")
         return False
 
