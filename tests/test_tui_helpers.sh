@@ -88,9 +88,9 @@ tui_dialog() {
   case "$*" in
     *--checklist*) printf '"github" "youtube" "cloudflare"\n' ;;
     *"Частота проверки"*) printf '5min\n' ;;
-    *"Попытки получения профиля"*) printf '10\n' ;;
+    *"Попытки получения профиля"*) printf 'infinite\n' ;;
     *"Доступ к локальной сети"*) printf 'exclude\n' ;;
-    *"Вариант AWG"*) printf '1\n' ;;
+    *"Вариант AWG"*) printf 'random\n' ;;
     *"DNS из warp-gen"*) printf 'cf\n' ;;
     *"Сервер из warp-gen"*) printf 'def\n' ;;
     *"IPv6"*) printf 'yes\n' ;;
@@ -114,7 +114,7 @@ assert_equal 5min "${check_interval}"
 tui_select_lan_mode
 assert_equal 1 "${exclude_lan}"
 tui_select_warp_parameters
-assert_equal 1 "${awg_variant}"
+assert_equal random "${awg_variant}"
 assert_equal cf "${dns_preset}"
 assert_equal def "${server_preset}"
 assert_equal 1 "${warp_ipv6}"
@@ -123,7 +123,7 @@ tui_select_generator_source
 assert_equal 'https://warp-gen.github.io' "${generator_site_url}"
 assert_equal '' "${generator_https_proxy}"
 tui_select_initial_attempts
-assert_equal 10 "${initial_generation_attempts}"
+assert_equal infinite "${initial_generation_attempts}"
 
 if tui_calculate_quorum unsupported 3 >/dev/null 2>&1; then
   echo "unsupported quorum mode was accepted" >&2
