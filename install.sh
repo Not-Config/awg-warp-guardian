@@ -590,6 +590,7 @@ install -d -m 755 "${endpoint_dropin_dir}"
 endpoint_dropin_tmp=$(mktemp "${endpoint_dropin_dir}/.10-endpoint-route.conf.XXXXXX")
 cat >"${endpoint_dropin_tmp}" <<EOF
 [Service]
+TimeoutStartSec=60s
 ExecStartPre=/usr/local/sbin/awg-warp-route-endpoint up-config ${config_path} /run/awg-warp-guardian/${interface}.endpoint
 ExecStopPost=/usr/local/sbin/awg-warp-route-endpoint down-state /run/awg-warp-guardian/${interface}.endpoint
 EOF
@@ -632,7 +633,10 @@ if [[ -s ${config_path} ]]; then
     echo "awg-quick rejected ${config_path}; requesting a fresh warp-gen profile." >&2
     systemctl stop "awg-quick@${interface}.service" 2>/dev/null || true
   else
-    systemctl restart "awg-quick@${interface}.service" || true
+    if ! timeout 60s systemctl restart "awg-quick@${interface}.service"; then
+      echo "[installer] Tunnel start timed out; cancelling it before profile replacement." >&2
+      systemctl stop "awg-quick@${interface}.service" 2>/dev/null || true
+    fi
     echo "[installer] Waiting ${REPAIR_WAIT:-12} seconds for a handshake..."
     sleep 12
     if /usr/local/sbin/awg-warp-guardian check; then

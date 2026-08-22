@@ -224,6 +224,32 @@ class HealthTests(unittest.TestCase):
             self.assertGreater(runner.max_active_curls, 1)
 
 
+class TimedOutRestartRunner:
+    def __init__(self):
+        self.events = []
+
+    def run(self, args, *, input_text=None, timeout=None, env=None):
+        self.events.append((list(args), timeout))
+        if args[:2] == ["systemctl", "restart"]:
+            raise subprocess.TimeoutExpired(args, timeout)
+        if args[:2] == ["systemctl", "stop"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        raise AssertionError(f"unexpected command: {args}")
+
+
+class RestartTests(unittest.TestCase):
+    def test_timed_out_restart_cancels_systemd_start_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = TimedOutRestartRunner()
+            instance = guardian.Guardian(make_settings(directory), runner)
+
+            self.assertFalse(instance.hard_restart())
+            self.assertEqual(runner.events[0][0][:2], ["systemctl", "restart"])
+            self.assertEqual(runner.events[0][1], 45)
+            self.assertEqual(runner.events[1][0][:2], ["systemctl", "stop"])
+            self.assertEqual(runner.events[1][1], 15)
+
+
 class RotationGuardian(guardian.Guardian):
     def __init__(self, settings, health_results):
         super().__init__(settings)

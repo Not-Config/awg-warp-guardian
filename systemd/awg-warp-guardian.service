@@ -21,4 +21,4 @@ ProtectControlGroups=true
 LockPersonality=true
 RestrictRealtime=true
 SystemCallArchitectures=native
-TimeoutStartSec=15min
+TimeoutStartSec=30min

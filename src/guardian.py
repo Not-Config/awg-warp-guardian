@@ -547,7 +547,7 @@ class Guardian:
         if not self.settings.allow_hard_restart:
             LOG.warning("Hard restart is disabled")
             return False
-        return self.command_ok(
+        restarted = self.command_ok(
             [
                 self.settings.systemctl_command,
                 "restart",
@@ -555,6 +555,23 @@ class Guardian:
             ],
             timeout=45,
         )
+        if restarted:
+            return True
+        # Killing a timed-out systemctl client does not cancel the start job
+        # inside systemd. In particular, awg-quick may keep retrying DNS for
+        # many minutes while Guardian is waiting to generate a replacement.
+        # Explicitly stop the unit so the half-created interface and queued
+        # start job cannot block the recovery sequence.
+        LOG.error("Service restart failed or timed out; cancelling the start job")
+        self.command_ok(
+            [
+                self.settings.systemctl_command,
+                "stop",
+                self.settings.service,
+            ],
+            timeout=15,
+        )
+        return False
 
     def validate_candidate(self, path: Path) -> None:
         text = path.read_text(encoding="utf-8")
@@ -748,7 +765,7 @@ class Guardian:
                     state.consecutive_failures = 0
                     state.last_success = int(time.time())
                     state.last_action = "rotated with live sync"
-                    LOG.warning("New config passed health checks after live sync")
+                    LOG.info("New config passed health checks after live sync")
                     return True
                 LOG.warning("Live-synced candidate failed checks; restoring live config")
                 self.soft_reload(current)
@@ -761,7 +778,7 @@ class Guardian:
                     state.consecutive_failures = 0
                     state.last_success = int(time.time())
                     state.last_action = "rotated with service restart"
-                    LOG.warning("New config passed health checks after service restart")
+                    LOG.info("New config passed health checks after service restart")
                     return True
             LOG.error("Replacement config failed; rolling back")
             if backup is not None:
