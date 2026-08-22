@@ -173,7 +173,7 @@ class GeneratorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             runner = GeneratorRunner(
                 generated_stderr=(
-                    "[generator] Requesting a fresh identity bundle\n"
+                    "[generator] Requesting a fresh warp-gen config bundle\n"
                     "PrivateKey = MUST_NOT_BE_LOGGED\n"
                 )
             )
@@ -181,7 +181,7 @@ class GeneratorTests(unittest.TestCase):
             with self.assertLogs("awg-warp-guardian", level="INFO") as captured:
                 instance.generate_candidate(guardian.State())
             output = "\n".join(captured.output)
-            self.assertIn("fresh identity bundle", output)
+            self.assertIn("fresh warp-gen config bundle", output)
             self.assertNotIn("MUST_NOT_BE_LOGGED", output)
 
 
